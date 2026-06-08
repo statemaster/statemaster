@@ -1,0 +1,24 @@
+[package]
+name = "smdb-storage"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "StorageEngine trait + embedded redb implementation for StateMaster"
+
+[dependencies]
+smdb-core = { path = "../smdb-core" }
+serde.workspace = true
+serde_json.workspace = true
+rmp-serde.workspace = true
+redb.workspace = true
+thiserror.workspace = true
+uuid.workspace = true
+chrono.workspace = true
+tracing.workspace = true
+parking_lot.workspace = true
+bytes.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+tokio.workspace = true

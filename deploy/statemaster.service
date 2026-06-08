@@ -1,0 +1,50 @@
+[Unit]
+Description=StateMaster — state-machine database daemon
+Documentation=https://github.com/pollystack/statemaster/blob/main/PROTOCOL.md
+After=network.target
+Wants=network.target
+
+[Service]
+Type=simple
+User=statemaster
+Group=statemaster
+
+ExecStart=/usr/local/bin/smdbd --config /etc/statemaster/statemaster.toml
+ExecReload=/bin/kill -HUP $MAINPID
+
+# Give the daemon time for WAL recovery before accepting connections.
+# smdbd performs recovery internally before binding; this is extra headroom.
+TimeoutStartSec=60
+
+# Allow graceful drain: in-flight transitions and checkpointing
+TimeoutStopSec=30
+KillMode=mixed
+KillSignal=SIGTERM
+
+Restart=on-failure
+RestartSec=5s
+StartLimitIntervalSec=60
+StartLimitBurst=3
+
+# Data directory where WAL segments, heap files, and indexes live
+WorkingDirectory=/var/lib/statemaster
+
+# Hardening
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/statemaster/data
+ReadOnlyPaths=/etc/statemaster
+
+# Allow binding to privileged ports if ever reconfigured below 1024
+AmbientCapabilities=
+CapabilityBoundingSet=
+
+# Logging — journald picks up stdout/stderr automatically
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=smdbd
+
+[Install]
+WantedBy=multi-user.target

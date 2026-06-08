@@ -1,0 +1,30 @@
+[package]
+name = "smdb-sdk"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "Reference Rust client SDK for StateMaster"
+
+[dependencies]
+smdb-core = { path = "../smdb-core" }
+smdb-proto = { path = "../smdb-proto" }
+serde.workspace = true
+serde_json.workspace = true
+rmp-serde.workspace = true
+tokio.workspace = true
+tokio-util.workspace = true
+tokio-rustls.workspace = true
+rustls.workspace = true
+webpki-roots.workspace = true
+bytes.workspace = true
+thiserror.workspace = true
+uuid.workspace = true
+chrono.workspace = true
+tracing.workspace = true
+parking_lot.workspace = true
+futures.workspace = true
+rand.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

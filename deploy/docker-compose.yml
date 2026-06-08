@@ -1,0 +1,27 @@
+services:
+  statemaster:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
+    image: statemaster:local
+    container_name: statemaster
+    restart: unless-stopped
+    ports:
+      - "7632:7632"   # wire protocol
+      - "7633:7633"   # metrics / health
+      - "7634:7634"   # reserved (replication)
+    volumes:
+      - statemaster-data:/var/lib/statemaster/data
+      - ./statemaster.toml:/etc/statemaster/statemaster.toml:ro
+    environment:
+      - SMDB_LOG_LEVEL=info
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:7633/healthz || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+volumes:
+  statemaster-data:
+    driver: local

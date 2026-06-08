@@ -1,0 +1,46 @@
+[server]
+# Wire-protocol listener. Clients connect here with TLS.
+# Port 7632 = "SMDB" on a phone keypad.
+listen_addr = "0.0.0.0:7632"
+
+# HTTP endpoint for Prometheus metrics (/metrics) and health probes
+# (/healthz for liveness, /readyz for readiness after recovery).
+metrics_addr = "0.0.0.0:7633"
+
+# Reserved for future peer / replication traffic.
+# replication_addr = "0.0.0.0:7634"
+
+[storage]
+# Root directory for WAL segments, heap files, and B-tree index files.
+data_dir = "/var/lib/statemaster/data"
+
+# fsync_mode controls write-ahead log durability:
+#   "synchronous"  — fsync before ACK. Fully durable. Default.
+#   "relaxed"      — group commit with a small delay. Higher throughput,
+#                    small window of potential data loss on hard crash.
+fsync_mode = "synchronous"
+
+[tls]
+# PEM-encoded server certificate chain and private key.
+# Required; the daemon will not start if these paths are missing or unreadable.
+cert_path = "/etc/statemaster/cert.pem"
+key_path  = "/etc/statemaster/key.pem"
+
+[logging]
+# Log level: "trace" | "debug" | "info" | "warn" | "error"
+level = "info"
+
+# Log format: "json" (structured, for log aggregators) | "text" (human-readable)
+format = "json"
+
+[dispatcher]
+# How often the dispatcher drains the outbox and pushes change records to
+# subscribers, in milliseconds. Lower values reduce change-stream lag at
+# the cost of more frequent storage reads.
+interval_ms = 100
+
+[auth]
+# Bearer tokens accepted in the Auth handshake.
+# In production replace these with long, randomly-generated secrets and
+# rotate them via your secrets manager. Never commit real tokens.
+tokens = ["changeme"]

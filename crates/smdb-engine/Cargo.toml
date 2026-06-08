@@ -1,0 +1,23 @@
+[package]
+name = "smdb-engine"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "StateMaster engine — ties FSM core + storage + concurrency + dispatcher"
+
+[dependencies]
+smdb-core = { path = "../smdb-core" }
+smdb-storage = { path = "../smdb-storage" }
+serde.workspace = true
+serde_json.workspace = true
+rmp-serde.workspace = true
+tokio.workspace = true
+thiserror.workspace = true
+uuid.workspace = true
+chrono.workspace = true
+tracing.workspace = true
+parking_lot.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
