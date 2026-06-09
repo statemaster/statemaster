@@ -168,14 +168,8 @@ fn main() -> Result<()> {
                 .unwrap_or_else(|_| PathBuf::from(&args.data_dir))
                 .display()
         );
-        println!(
-            "db_file:  {}",
-            db_path.display()
-        );
-        println!(
-            "db_exists: {}",
-            if db_path.exists() { "yes" } else { "no" }
-        );
+        println!("db_file:  {}", db_path.display());
+        println!("db_exists: {}", if db_path.exists() { "yes" } else { "no" });
         return Ok(());
     }
 
@@ -198,7 +192,7 @@ fn main() -> Result<()> {
                 println!("No machines defined.");
                 return Ok(());
             }
-            println!("{:<30} {:>7}  {}", "Name", "Version", "Initial State");
+            println!("{:<30} {:>7}  Initial State", "Name", "Version");
             print_separator();
             for m in &machines {
                 println!("{:<30} {:>7}  {}", m.name, m.version, m.initial_state);
@@ -216,9 +210,9 @@ fn main() -> Result<()> {
         }
 
         Command::Current { entity_id, machine } => {
-            let state = engine
-                .current(&entity_id, &machine)
-                .with_context(|| format!("getting current state for '{entity_id}' in '{machine}'"))?;
+            let state = engine.current(&entity_id, &machine).with_context(|| {
+                format!("getting current state for '{entity_id}' in '{machine}'")
+            })?;
             println!("Entity:    {}", state.entity_id);
             println!("Machine:   {}", state.machine);
             println!("State:     {}", state.current_state);
@@ -242,8 +236,8 @@ fn main() -> Result<()> {
             }
 
             println!(
-                "{:>8}  {:<22}  {:<20}  {:<20}  {:<20}  {}",
-                "Seq", "Timestamp", "Event", "From", "To", "Actor"
+                "{:>8}  {:<22}  {:<20}  {:<20}  {:<20}  Actor",
+                "Seq", "Timestamp", "Event", "From", "To"
             );
             print_separator();
             for r in &records {
@@ -281,8 +275,9 @@ fn main() -> Result<()> {
             expected_version,
         } => {
             let ctx_value: serde_json::Value = match ctx {
-                Some(s) => serde_json::from_str(&s)
-                    .with_context(|| format!("parsing ctx JSON: {}", s))?,
+                Some(s) => {
+                    serde_json::from_str(&s).with_context(|| format!("parsing ctx JSON: {}", s))?
+                }
                 None => serde_json::json!({}),
             };
             let actor_str = actor.unwrap_or_else(|| "smdbctl".to_string());
@@ -297,9 +292,7 @@ fn main() -> Result<()> {
                     expected_version,
                     None,
                 )
-                .with_context(|| {
-                    format!("firing '{event}' on '{entity_id}' in '{machine}'")
-                })?;
+                .with_context(|| format!("firing '{event}' on '{entity_id}' in '{machine}'"))?;
 
             println!("Transition applied successfully.");
             println!("  Entity:    {}", result.entity_id);

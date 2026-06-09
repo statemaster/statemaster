@@ -72,6 +72,7 @@ impl FsmPlanner {
 
     /// Constructs the immutable `TransitionRecord`. `sequence` is set to 0
     /// (unassigned) — storage assigns the final value when persisting.
+    #[allow(clippy::too_many_arguments)]
     pub fn build_transition_record(
         entity_id: EntityId,
         machine: MachineName,
@@ -110,7 +111,14 @@ mod tests {
         MachineBuilder::new()
             .name("fulfillment")
             .version(1)
-            .states(["pending", "paid", "packed", "shipped", "delivered", "canceled"])
+            .states([
+                "pending",
+                "paid",
+                "packed",
+                "shipped",
+                "delivered",
+                "canceled",
+            ])
             .initial_state("pending")
             .transition("pay", ["pending"], "paid")
             .transition_with_guards("pack", ["paid"], "packed", ["inventory_reserved"])

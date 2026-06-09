@@ -10,7 +10,9 @@ pub enum StorageError {
     #[error("already exists: {0}")]
     AlreadyExists(String),
 
-    #[error("version conflict: entity '{entity_id}' expected version {expected} but found {actual}")]
+    #[error(
+        "version conflict: entity '{entity_id}' expected version {expected} but found {actual}"
+    )]
     VersionConflict {
         entity_id: String,
         expected: u64,

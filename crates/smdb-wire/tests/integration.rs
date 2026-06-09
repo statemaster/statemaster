@@ -51,7 +51,9 @@ async fn start_server() -> (SocketAddr, watch::Sender<bool>) {
         let eng = Arc::clone(&engine);
         let sd = shutdown_rx.clone();
         tokio::spawn(async move {
-            Dispatcher::new(eng, Duration::from_millis(10), sd).run().await;
+            Dispatcher::new(eng, Duration::from_millis(10), sd)
+                .run()
+                .await;
         });
     }
 
@@ -146,7 +148,12 @@ async fn transition_over_the_wire_succeeds() {
         .unwrap();
 
     let reply = next_frame(&mut framed).await;
-    assert_eq!(reply.tag, FrameTag::Result, "expected Result, got {:?}", reply.tag);
+    assert_eq!(
+        reply.tag,
+        FrameTag::Result,
+        "expected Result, got {:?}",
+        reply.tag
+    );
     let result: ResultMessage = decode_message(&reply).unwrap();
     assert_eq!(result.request_id, 1);
     assert_eq!(result.payload["state"], "paid");
@@ -187,11 +194,18 @@ async fn idempotent_retry_replays_same_result_with_real_version() {
         .await
         .unwrap();
     let replay = next_frame(&mut framed).await;
-    assert_eq!(replay.tag, FrameTag::Result, "replay should not be a rejection");
+    assert_eq!(
+        replay.tag,
+        FrameTag::Result,
+        "replay should not be a rejection"
+    );
     let second: ResultMessage = decode_message(&replay).unwrap();
 
     assert_eq!(second.payload["sequence"], first.payload["sequence"]);
-    assert_eq!(second.payload["transition_id"], first.payload["transition_id"]);
+    assert_eq!(
+        second.payload["transition_id"],
+        first.payload["transition_id"]
+    );
     // Regression guard: replay previously returned version 0.
     assert_eq!(second.payload["version"], 1);
 }

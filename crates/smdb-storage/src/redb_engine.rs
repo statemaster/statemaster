@@ -27,11 +27,9 @@ const MACHINES: TableDefinition<&str, &[u8]> = TableDefinition::new("machines");
 const ENTITY_STATES: TableDefinition<&str, &[u8]> = TableDefinition::new("entity_states");
 const TRANSITIONS: TableDefinition<u64, &[u8]> = TableDefinition::new("transitions");
 const TRANSITIONS_BY_ID: TableDefinition<&str, u64> = TableDefinition::new("transitions_by_id");
-const ENTITY_TRANSITIONS: TableDefinition<&str, u64> =
-    TableDefinition::new("entity_transitions");
+const ENTITY_TRANSITIONS: TableDefinition<&str, u64> = TableDefinition::new("entity_transitions");
 const EFFECTS: TableDefinition<&str, &[u8]> = TableDefinition::new("effects");
-const EFFECTS_BY_TXN: TableDefinition<&str, &str> =
-    TableDefinition::new("effects_by_txn");
+const EFFECTS_BY_TXN: TableDefinition<&str, &str> = TableDefinition::new("effects_by_txn");
 const IDEMPOTENCY: TableDefinition<&str, u64> = TableDefinition::new("idempotency");
 const META: TableDefinition<&str, u64> = TableDefinition::new("meta");
 
@@ -61,8 +59,7 @@ impl RedbEngine {
 
     /// Open an in-memory database (useful for tests).
     pub fn in_memory() -> Result<Self> {
-        let db = Database::builder()
-            .create_with_backend(redb::backends::InMemoryBackend::new())?;
+        let db = Database::builder().create_with_backend(redb::backends::InMemoryBackend::new())?;
         let engine = Self {
             db,
             write_lock: Mutex::new(()),
@@ -107,14 +104,9 @@ impl RedbEngine {
         format!("{}\x00", transition_id)
     }
 
-    fn next_sequence_in_tx(
-        tx: &redb::WriteTransaction,
-    ) -> std::result::Result<u64, StorageError> {
+    fn next_sequence_in_tx(tx: &redb::WriteTransaction) -> std::result::Result<u64, StorageError> {
         let mut meta = tx.open_table(META)?;
-        let current = meta
-            .get(META_SEQUENCE)?
-            .map(|v| v.value())
-            .unwrap_or(0u64);
+        let current = meta.get(META_SEQUENCE)?.map(|v| v.value()).unwrap_or(0u64);
         let next = current + 1;
         meta.insert(META_SEQUENCE, next)?;
         Ok(next)
@@ -204,11 +196,7 @@ impl StorageEngine for RedbEngine {
         Ok(())
     }
 
-    fn list_entities_in_state(
-        &self,
-        machine: &str,
-        state_name: &str,
-    ) -> Result<Vec<EntityState>> {
+    fn list_entities_in_state(&self, machine: &str, state_name: &str) -> Result<Vec<EntityState>> {
         let tx = self.db.begin_read()?;
         let tbl = tx.open_table(ENTITY_STATES)?;
         let mut results = Vec::new();
@@ -240,8 +228,7 @@ impl StorageEngine for RedbEngine {
             let mut by_id = tx.open_table(TRANSITIONS_BY_ID)?;
             by_id.insert(record.id.as_str(), seq)?;
 
-            let et_key =
-                Self::entity_transition_key(&record.entity_id, &record.machine, seq);
+            let et_key = Self::entity_transition_key(&record.entity_id, &record.machine, seq);
             let mut entity_tbl = tx.open_table(ENTITY_TRANSITIONS)?;
             entity_tbl.insert(et_key.as_str(), seq)?;
         }
@@ -257,10 +244,10 @@ impl StorageEngine for RedbEngine {
             .ok_or_else(|| StorageError::NotFound(format!("transition '{}'", id)))?
             .value();
         let tbl = tx.open_table(TRANSITIONS)?;
-        let record: TransitionRecord = tbl
-            .get(seq)?
-            .map(|v| rmp_serde::from_slice(v.value()))
-            .ok_or_else(|| StorageError::NotFound(format!("transition seq {}", seq)))??;
+        let record: TransitionRecord =
+            tbl.get(seq)?
+                .map(|v| rmp_serde::from_slice(v.value()))
+                .ok_or_else(|| StorageError::NotFound(format!("transition seq {}", seq)))??;
         Ok(record)
     }
 
@@ -397,10 +384,10 @@ impl StorageEngine for RedbEngine {
             None => return Ok(None),
         };
         let tbl = tx.open_table(TRANSITIONS)?;
-        let record: TransitionRecord = tbl
-            .get(seq)?
-            .map(|v| rmp_serde::from_slice(v.value()))
-            .ok_or_else(|| StorageError::NotFound(format!("transition seq {}", seq)))??;
+        let record: TransitionRecord =
+            tbl.get(seq)?
+                .map(|v| rmp_serde::from_slice(v.value()))
+                .ok_or_else(|| StorageError::NotFound(format!("transition seq {}", seq)))??;
         Ok(Some(record))
     }
 
@@ -427,8 +414,7 @@ impl StorageEngine for RedbEngine {
             let mut by_id = tx.open_table(TRANSITIONS_BY_ID)?;
             by_id.insert(record.id.as_str(), seq)?;
 
-            let et_key =
-                Self::entity_transition_key(&record.entity_id, &record.machine, seq);
+            let et_key = Self::entity_transition_key(&record.entity_id, &record.machine, seq);
             let mut entity_tbl = tx.open_table(ENTITY_TRANSITIONS)?;
             entity_tbl.insert(et_key.as_str(), seq)?;
         }
@@ -490,10 +476,7 @@ impl StorageEngine for RedbEngine {
     fn current_sequence(&self) -> Result<Sequence> {
         let tx = self.db.begin_read()?;
         let tbl = tx.open_table(META)?;
-        let seq = tbl
-            .get(META_SEQUENCE)?
-            .map(|v| v.value())
-            .unwrap_or(0u64);
+        let seq = tbl.get(META_SEQUENCE)?.map(|v| v.value()).unwrap_or(0u64);
         Ok(seq)
     }
 }
@@ -506,9 +489,7 @@ impl RedbEngine {
             let mut tbl = tx.open_table(EFFECTS)?;
             let bytes = tbl
                 .get(effect_id)?
-                .ok_or_else(|| {
-                    StorageError::NotFound(format!("effect '{}'", effect_id))
-                })?
+                .ok_or_else(|| StorageError::NotFound(format!("effect '{}'", effect_id)))?
                 .value()
                 .to_vec();
             let mut effect: Effect = rmp_serde::from_slice(&bytes)?;

@@ -1,6 +1,6 @@
 use thiserror::Error;
 
-use crate::types::{EntityId, EventName, MachineName, GuardName, StateName, Version};
+use crate::types::{EntityId, EventName, GuardName, MachineName, StateName, Version};
 
 #[derive(Debug, Clone, Error)]
 pub enum CoreError {

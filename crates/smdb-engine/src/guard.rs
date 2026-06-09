@@ -31,12 +31,7 @@ impl GuardRegistry {
     /// is **not registered** (default-allow for unknown guards). Returns
     /// `false` only when the guard is explicitly registered and returns
     /// `false`.
-    pub fn evaluate(
-        &self,
-        name: &str,
-        state: &EntityState,
-        ctx: &serde_json::Value,
-    ) -> bool {
+    pub fn evaluate(&self, name: &str, state: &EntityState, ctx: &serde_json::Value) -> bool {
         match self.guards.get(name) {
             Some(f) => f(state, ctx),
             None => true, // default-allow for unregistered guards
@@ -98,15 +93,7 @@ mod tests {
             Arc::new(|_, ctx| ctx["amount"].as_u64().unwrap_or(0) > 0),
         );
         let state = make_state();
-        assert!(registry.evaluate(
-            "check_amount",
-            &state,
-            &serde_json::json!({ "amount": 50 })
-        ));
-        assert!(!registry.evaluate(
-            "check_amount",
-            &state,
-            &serde_json::json!({ "amount": 0 })
-        ));
+        assert!(registry.evaluate("check_amount", &state, &serde_json::json!({ "amount": 50 })));
+        assert!(!registry.evaluate("check_amount", &state, &serde_json::json!({ "amount": 0 })));
     }
 }

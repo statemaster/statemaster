@@ -5,7 +5,9 @@ pub mod frame;
 pub mod messages;
 
 pub use codec::{decode_message, encode_message};
-pub use constants::{DEFAULT_METRICS_PORT, DEFAULT_PORT, MAX_FRAME_SIZE, PROTOCOL_VERSION, SERVER_VERSION};
+pub use constants::{
+    DEFAULT_METRICS_PORT, DEFAULT_PORT, MAX_FRAME_SIZE, PROTOCOL_VERSION, SERVER_VERSION,
+};
 pub use error::{ProtoError, Result};
 pub use frame::{Frame, FrameCodec, FrameTag};
 pub use messages::{
@@ -28,11 +30,10 @@ mod tests {
         let mut codec = FrameCodec;
         codec.encode(original, &mut buf).expect("encode failed");
 
-        let decoded = codec
+        codec
             .decode(&mut buf)
             .expect("decode error")
-            .expect("expected a frame");
-        decoded
+            .expect("expected a frame")
     }
 
     #[test]

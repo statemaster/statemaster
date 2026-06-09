@@ -8,8 +8,8 @@ use tokio::sync::{mpsc, oneshot, Mutex};
 use tokio_util::codec::Framed;
 
 use smdb_proto::constants::PROTOCOL_VERSION;
-use smdb_proto::messages::{AuthMessage, StartupMessage};
 use smdb_proto::frame::{Frame, FrameTag};
+use smdb_proto::messages::{AuthMessage, StartupMessage};
 use smdb_proto::{decode_message, encode_message, FrameCodec};
 
 use crate::config::ClientConfig;
@@ -51,16 +51,15 @@ impl Connection {
     /// Connect, handshake (Startup + Auth), and wait for AuthOk + Ready.
     pub async fn connect(config: &ClientConfig) -> Result<Arc<Self>> {
         // ---- TCP connect with timeout ----
-        let tcp = tokio::time::timeout(
-            config.connect_timeout,
-            TcpStream::connect(&config.addr),
-        )
-        .await
-        .map_err(|_| SdkError::ConnectionFailed(format!(
-            "connect timeout after {:?}",
-            config.connect_timeout
-        )))?
-        .map_err(|e| SdkError::ConnectionFailed(e.to_string()))?;
+        let tcp = tokio::time::timeout(config.connect_timeout, TcpStream::connect(&config.addr))
+            .await
+            .map_err(|_| {
+                SdkError::ConnectionFailed(format!(
+                    "connect timeout after {:?}",
+                    config.connect_timeout
+                ))
+            })?
+            .map_err(|e| SdkError::ConnectionFailed(e.to_string()))?;
 
         tcp.set_nodelay(true).ok();
 
@@ -87,12 +86,18 @@ impl Connection {
             // Temporarily take the sink to send the startup; we reassemble after.
             // We use a local variable so we don't need the Mutex yet.
             let mut s = sink;
-            s.send(frame).await.map_err(|e| SdkError::ConnectionFailed(e.to_string()))?;
+            s.send(frame)
+                .await
+                .map_err(|e| SdkError::ConnectionFailed(e.to_string()))?;
 
             // ---- Auth frame ----
-            let auth = AuthMessage { token: config.token.clone() };
+            let auth = AuthMessage {
+                token: config.token.clone(),
+            };
             let auth_frame = encode_message(FrameTag::Auth, &auth)?;
-            s.send(auth_frame).await.map_err(|e| SdkError::ConnectionFailed(e.to_string()))?;
+            s.send(auth_frame)
+                .await
+                .map_err(|e| SdkError::ConnectionFailed(e.to_string()))?;
 
             // ---- Wait for AuthOk then Ready ----
             let mut got_auth_ok = false;
@@ -107,7 +112,11 @@ impl Connection {
                 let frame = tokio::time::timeout(remaining, stream.next())
                     .await
                     .map_err(|_| SdkError::ConnectionFailed("handshake timeout".into()))?
-                    .ok_or_else(|| SdkError::ConnectionFailed("server closed connection during handshake".into()))?
+                    .ok_or_else(|| {
+                        SdkError::ConnectionFailed(
+                            "server closed connection during handshake".into(),
+                        )
+                    })?
                     .map_err(|e| SdkError::ConnectionFailed(e.to_string()))?;
 
                 match frame.tag {
@@ -115,8 +124,8 @@ impl Connection {
                         got_auth_ok = true;
                     }
                     FrameTag::AuthError => {
-                        let msg: smdb_proto::messages::ErrorMessage =
-                            decode_message(&frame).unwrap_or(smdb_proto::messages::ErrorMessage {
+                        let msg: smdb_proto::messages::ErrorMessage = decode_message(&frame)
+                            .unwrap_or(smdb_proto::messages::ErrorMessage {
                                 message: "auth error".into(),
                                 fatal: true,
                             });
@@ -126,8 +135,8 @@ impl Connection {
                         got_ready = true;
                     }
                     FrameTag::Error => {
-                        let msg: smdb_proto::messages::ErrorMessage =
-                            decode_message(&frame).unwrap_or(smdb_proto::messages::ErrorMessage {
+                        let msg: smdb_proto::messages::ErrorMessage = decode_message(&frame)
+                            .unwrap_or(smdb_proto::messages::ErrorMessage {
                                 message: "server error".into(),
                                 fatal: true,
                             });
@@ -148,7 +157,7 @@ impl Connection {
             // Spawn the reader task.
             Self::spawn_reader(stream, shared);
 
-            return Ok(conn);
+            Ok(conn)
         }
     }
 
@@ -173,7 +182,10 @@ impl Connection {
         let frame = Frame { tag, body };
         {
             let mut writer = self.writer.lock().await;
-            writer.send(frame).await.map_err(|_| SdkError::Disconnected)?;
+            writer
+                .send(frame)
+                .await
+                .map_err(|_| SdkError::Disconnected)?;
         }
 
         let result = tokio::time::timeout(timeout, rx).await;
@@ -241,7 +253,9 @@ impl Connection {
                     }
                     FrameTag::ChangeRecord => {
                         // Decode to get the subscription_id.
-                        match smdb_proto::decode_message::<smdb_proto::messages::ChangeRecordMessage>(&frame) {
+                        match smdb_proto::decode_message::<smdb_proto::messages::ChangeRecordMessage>(
+                            &frame,
+                        ) {
                             Ok(msg) => {
                                 let state = shared.lock().await;
                                 if let Some(tx) = state.subscriptions.get(&msg.subscription_id) {
@@ -257,7 +271,10 @@ impl Connection {
                         // Keepalive response — nothing to do.
                     }
                     FrameTag::Notice => {
-                        if let Ok(msg) = smdb_proto::decode_message::<smdb_proto::messages::NoticeMessage>(&frame) {
+                        if let Ok(msg) = smdb_proto::decode_message::<
+                            smdb_proto::messages::NoticeMessage,
+                        >(&frame)
+                        {
                             tracing::info!("server notice: {}", msg.message);
                         }
                     }

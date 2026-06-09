@@ -36,7 +36,9 @@ impl MachineDefinition {
         let mut seen_states = std::collections::HashSet::new();
         for state in &self.states {
             if !seen_states.insert(state.as_str()) {
-                return Err(CoreError::DuplicateState { name: state.clone() });
+                return Err(CoreError::DuplicateState {
+                    name: state.clone(),
+                });
             }
         }
 
@@ -178,9 +180,11 @@ impl MachineBuilder {
         let name = self.name.ok_or_else(|| CoreError::InvalidDefinition {
             reason: "machine name is required".into(),
         })?;
-        let initial_state = self.initial_state.ok_or_else(|| CoreError::InvalidDefinition {
-            reason: "initial_state is required".into(),
-        })?;
+        let initial_state = self
+            .initial_state
+            .ok_or_else(|| CoreError::InvalidDefinition {
+                reason: "initial_state is required".into(),
+            })?;
 
         let def = MachineDefinition {
             name,
@@ -205,7 +209,14 @@ mod tests {
         MachineBuilder::new()
             .name("fulfillment")
             .version(1)
-            .states(["pending", "paid", "packed", "shipped", "delivered", "canceled"])
+            .states([
+                "pending",
+                "paid",
+                "packed",
+                "shipped",
+                "delivered",
+                "canceled",
+            ])
             .initial_state("pending")
             .transition("pay", ["pending"], "paid")
             .transition_with_guards("pack", ["paid"], "packed", ["inventory_reserved"])
@@ -283,7 +294,11 @@ mod tests {
     #[test]
     fn cancel_from_multiple_states_has_three_pairs() {
         let def = fulfillment_machine();
-        let cancel = def.transitions.iter().find(|t| t.event == "cancel").unwrap();
+        let cancel = def
+            .transitions
+            .iter()
+            .find(|t| t.event == "cancel")
+            .unwrap();
         assert_eq!(cancel.from_states.len(), 3);
     }
 }

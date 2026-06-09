@@ -1,21 +1,16 @@
 use std::path::PathBuf;
 
 /// Controls how aggressively fsync is called after writes.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum FsyncMode {
     /// Call fsync after every write transaction. Strongest durability
     /// guarantee; appropriate for production.
+    #[default]
     Synchronous,
     /// Skip fsync. Much faster; data may be lost on OS crash. Suitable
     /// for tests and development environments where speed matters more
     /// than durability.
     Relaxed,
-}
-
-impl Default for FsyncMode {
-    fn default() -> Self {
-        FsyncMode::Synchronous
-    }
 }
 
 /// Runtime configuration for the `Engine`.

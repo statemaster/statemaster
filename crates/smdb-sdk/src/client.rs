@@ -2,9 +2,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use rand::Rng;
-use smdb_core::prelude::{
-    ChangeRecord, EntityState, MachineDefinition, TransitionRecord,
-};
+use smdb_core::prelude::{ChangeRecord, EntityState, MachineDefinition, TransitionRecord};
 use smdb_proto::messages::{
     CurrentMessage, DefineMachineMessage, RejectionMessage, ResultMessage, SubscribeMessage,
 };
@@ -76,8 +74,8 @@ impl Client {
                 })
             }
             FrameTag::Error => {
-                let msg: smdb_proto::messages::ErrorMessage = decode_message(&resp)
-                    .unwrap_or(smdb_proto::messages::ErrorMessage {
+                let msg: smdb_proto::messages::ErrorMessage =
+                    decode_message(&resp).unwrap_or(smdb_proto::messages::ErrorMessage {
                         message: "unknown server error".into(),
                         fatal: false,
                     });
@@ -169,9 +167,7 @@ impl Client {
         // Register before sending the frame so no records can be missed.
         {
             let mut state = conn.state.lock().await;
-            state
-                .subscriptions
-                .insert(subscription_id.clone(), tx);
+            state.subscriptions.insert(subscription_id.clone(), tx);
         }
 
         let msg = SubscribeMessage {
@@ -212,8 +208,8 @@ impl Client {
                 let mut state = conn.state.lock().await;
                 state.subscriptions.remove(&subscription_id);
 
-                let msg: smdb_proto::messages::ErrorMessage = decode_message(&resp)
-                    .unwrap_or(smdb_proto::messages::ErrorMessage {
+                let msg: smdb_proto::messages::ErrorMessage =
+                    decode_message(&resp).unwrap_or(smdb_proto::messages::ErrorMessage {
                         message: "unknown server error".into(),
                         fatal: false,
                     });
@@ -260,8 +256,8 @@ impl Client {
                 })
             }
             FrameTag::Error => {
-                let msg: smdb_proto::messages::ErrorMessage = decode_message(&frame)
-                    .unwrap_or(smdb_proto::messages::ErrorMessage {
+                let msg: smdb_proto::messages::ErrorMessage =
+                    decode_message(&frame).unwrap_or(smdb_proto::messages::ErrorMessage {
                         message: "unknown server error".into(),
                         fatal: false,
                     });
@@ -380,8 +376,9 @@ impl TransitionBuilder {
                 let result_msg: ResultMessage = decode_message(&resp)?;
                 // The server embeds the ChangeRecord (or a subset) as the payload.
                 // We deserialise via the ChangeRecord type which has the fields we need.
-                let cr: ChangeRecord = serde_json::from_value(result_msg.payload)
-                    .map_err(|e| SdkError::Internal(format!("deserialize transition result: {}", e)))?;
+                let cr: ChangeRecord = serde_json::from_value(result_msg.payload).map_err(|e| {
+                    SdkError::Internal(format!("deserialize transition result: {}", e))
+                })?;
                 Ok(TransitionResponse {
                     entity_id: cr.entity_id,
                     machine: cr.machine,
@@ -403,8 +400,8 @@ impl TransitionBuilder {
                 })
             }
             FrameTag::Error => {
-                let err_msg: smdb_proto::messages::ErrorMessage = decode_message(&resp)
-                    .unwrap_or(smdb_proto::messages::ErrorMessage {
+                let err_msg: smdb_proto::messages::ErrorMessage =
+                    decode_message(&resp).unwrap_or(smdb_proto::messages::ErrorMessage {
                         message: "unknown server error".into(),
                         fatal: false,
                     });
@@ -468,6 +465,7 @@ impl HistoryBuilder {
             )
             .await?;
 
-        self.client.decode_result_payload::<Vec<TransitionRecord>>(resp)
+        self.client
+            .decode_result_payload::<Vec<TransitionRecord>>(resp)
     }
 }

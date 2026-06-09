@@ -69,18 +69,15 @@ async fn handle_health(
         "/readyz" => (StatusCode::OK, r#"{"status":"ready"}"#.to_string()),
         "/metrics" => {
             let uptime = start.elapsed().as_secs();
-            let transitions =
-                metrics
-                    .transitions_total
-                    .load(std::sync::atomic::Ordering::Relaxed);
-            let conns_total =
-                metrics
-                    .connections_total
-                    .load(std::sync::atomic::Ordering::Relaxed);
-            let conns_active =
-                metrics
-                    .connections_active
-                    .load(std::sync::atomic::Ordering::Relaxed);
+            let transitions = metrics
+                .transitions_total
+                .load(std::sync::atomic::Ordering::Relaxed);
+            let conns_total = metrics
+                .connections_total
+                .load(std::sync::atomic::Ordering::Relaxed);
+            let conns_active = metrics
+                .connections_active
+                .load(std::sync::atomic::Ordering::Relaxed);
             let body = format!(
                 "# HELP smdbd_uptime_seconds Daemon uptime in seconds\n\
                  # TYPE smdbd_uptime_seconds gauge\n\
@@ -97,7 +94,10 @@ async fn handle_health(
             );
             (StatusCode::OK, body)
         }
-        _ => (StatusCode::NOT_FOUND, r#"{"error":"not found"}"#.to_string()),
+        _ => (
+            StatusCode::NOT_FOUND,
+            r#"{"error":"not found"}"#.to_string(),
+        ),
     };
 
     let resp = Response::builder()
@@ -135,7 +135,6 @@ async fn run_metrics_server(
                 match accept {
                     Ok((stream, _peer)) => {
                         let metrics = Arc::clone(&metrics);
-                        let start = start;
                         tokio::spawn(async move {
                             let io = TokioIo::new(stream);
                             let svc = hyper::service::service_fn(move |req| {
@@ -223,8 +222,7 @@ async fn main() -> Result<()> {
         max_connections: 1024,
         max_frame_size: smdb_proto::MAX_FRAME_SIZE,
     };
-    let server = Server::new(server_config, Arc::clone(&engine))
-        .context("building wire server")?;
+    let server = Server::new(server_config, Arc::clone(&engine)).context("building wire server")?;
     let metrics = server.metrics();
 
     // Dispatcher: drains the committed log into change-stream deliveries.

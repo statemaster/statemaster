@@ -28,8 +28,7 @@ use crate::error::{Result, WireError};
 use crate::session::Session;
 
 /// Convenience alias for the shared write-half of a framed connection.
-type SharedSink<T> =
-    Arc<Mutex<futures::stream::SplitSink<Framed<T, FrameCodec>, Frame>>>;
+type SharedSink<T> = Arc<Mutex<futures::stream::SplitSink<Framed<T, FrameCodec>, Frame>>>;
 
 /// Connection and transition counters, shared with the daemon's metrics
 /// endpoint. The connection layer owns these so there is one source of truth.
@@ -126,8 +125,7 @@ impl Server {
             tokio::spawn(async move {
                 let _permit = permit;
                 let conn_metrics = Arc::clone(&metrics);
-                if let Err(e) =
-                    handle_connection(stream, engine, config, tls_config, metrics).await
+                if let Err(e) = handle_connection(stream, engine, config, tls_config, metrics).await
                 {
                     match e {
                         WireError::ConnectionClosed => {
@@ -136,7 +134,9 @@ impl Server {
                         other => error!("connection error from {}: {}", peer_addr, other),
                     }
                 }
-                conn_metrics.connections_active.fetch_sub(1, Ordering::Relaxed);
+                conn_metrics
+                    .connections_active
+                    .fetch_sub(1, Ordering::Relaxed);
             });
         }
     }
@@ -182,10 +182,7 @@ where
     // ------------------------------------------------------------------
     // 1. Startup handshake
     // ------------------------------------------------------------------
-    let startup_frame = stream
-        .next()
-        .await
-        .ok_or(WireError::ConnectionClosed)??;
+    let startup_frame = stream.next().await.ok_or(WireError::ConnectionClosed)??;
 
     if startup_frame.tag != FrameTag::Startup {
         send_fatal_error(&sink, "expected Startup frame").await;
@@ -215,10 +212,7 @@ where
     // ------------------------------------------------------------------
     // 2. Auth
     // ------------------------------------------------------------------
-    let auth_frame = stream
-        .next()
-        .await
-        .ok_or(WireError::ConnectionClosed)??;
+    let auth_frame = stream.next().await.ok_or(WireError::ConnectionClosed)??;
 
     if auth_frame.tag != FrameTag::Auth {
         send_fatal_error(&sink, "expected Auth frame").await;
@@ -344,18 +338,22 @@ where
         let engine_for_task = Arc::clone(&engine);
         let session_id_for_task = session_id.clone();
         let metrics_for_task = Arc::clone(&metrics);
-        let response_frames =
-            match tokio::task::spawn_blocking(move || {
-                handle_frame(&engine_for_task, &session_id_for_task, &metrics_for_task, frame)
-            })
-            .await
-            {
-                Ok(frames) => frames,
-                Err(join_err) => {
-                    error!("session {}: worker task failed: {}", session_id, join_err);
-                    vec![make_error_frame("internal server error", false)]
-                }
-            };
+        let response_frames = match tokio::task::spawn_blocking(move || {
+            handle_frame(
+                &engine_for_task,
+                &session_id_for_task,
+                &metrics_for_task,
+                frame,
+            )
+        })
+        .await
+        {
+            Ok(frames) => frames,
+            Err(join_err) => {
+                error!("session {}: worker task failed: {}", session_id, join_err);
+                vec![make_error_frame("internal server error", false)]
+            }
+        };
 
         let mut guard = sink.lock().await;
         for f in response_frames {
@@ -453,7 +451,13 @@ fn handle_frame(
                         Ok(v) => v,
                         Err(e) => return vec![make_error_frame(&e.to_string(), false)],
                     };
-                    match encode_message(FrameTag::Result, &ResultMessage { request_id, payload }) {
+                    match encode_message(
+                        FrameTag::Result,
+                        &ResultMessage {
+                            request_id,
+                            payload,
+                        },
+                    ) {
                         Ok(f) => vec![f],
                         Err(e) => vec![make_error_frame(&e.to_string(), false)],
                     }
@@ -474,7 +478,13 @@ fn handle_frame(
                         Ok(v) => v,
                         Err(e) => return vec![make_error_frame(&e.to_string(), false)],
                     };
-                    match encode_message(FrameTag::Result, &ResultMessage { request_id, payload }) {
+                    match encode_message(
+                        FrameTag::Result,
+                        &ResultMessage {
+                            request_id,
+                            payload,
+                        },
+                    ) {
                         Ok(f) => vec![f],
                         Err(e) => vec![make_error_frame(&e.to_string(), false)],
                     }
@@ -613,8 +623,14 @@ fn make_transition_result_frame(request_id: u64, result: TransitionResult) -> Fr
         "ts":            result.timestamp.to_rfc3339(),
     });
 
-    encode_message(FrameTag::Result, &ResultMessage { request_id, payload })
-        .unwrap_or_else(|e| make_error_frame(&e.to_string(), false))
+    encode_message(
+        FrameTag::Result,
+        &ResultMessage {
+            request_id,
+            payload,
+        },
+    )
+    .unwrap_or_else(|e| make_error_frame(&e.to_string(), false))
 }
 
 fn make_rejection_frame(request_id: u64, err: &EngineError) -> Frame {
@@ -631,17 +647,12 @@ fn make_rejection_frame(request_id: u64, err: &EngineError) -> Frame {
                 ("guard_failed", err.to_string(), None, None)
             }
 
-            EngineError::Core(CoreError::VersionConflict { actual, .. }) => (
-                "version_conflict",
-                err.to_string(),
-                None,
-                Some(*actual),
-            ),
+            EngineError::Core(CoreError::VersionConflict { actual, .. }) => {
+                ("version_conflict", err.to_string(), None, Some(*actual))
+            }
 
             EngineError::Core(CoreError::UnknownMachine { .. })
-            | EngineError::MachineNotFound(_) => {
-                ("unknown_machine", err.to_string(), None, None)
-            }
+            | EngineError::MachineNotFound(_) => ("unknown_machine", err.to_string(), None, None),
 
             EngineError::Core(CoreError::UnknownEntity { .. }) => {
                 ("unknown_entity", err.to_string(), None, None)
@@ -720,9 +731,7 @@ fn build_tls_config(config: &ServerConfig) -> Result<Option<Arc<rustls::ServerCo
         let mut keys: Vec<rustls::pki_types::PrivateKeyDer<'static>> = Vec::new();
 
         for item in rustls_pemfile::read_all(&mut reader) {
-            match item
-                .map_err(|e| WireError::Tls(format!("failed to parse key file: {}", e)))?
-            {
+            match item.map_err(|e| WireError::Tls(format!("failed to parse key file: {}", e)))? {
                 rustls_pemfile::Item::Pkcs1Key(k) => {
                     keys.push(rustls::pki_types::PrivateKeyDer::Pkcs1(k))
                 }

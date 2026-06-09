@@ -165,7 +165,10 @@ fn parse_command(input: &str) -> Result<Cmd, String> {
         "define" | "def" => parse_define(&tokens),
         "quit" | "exit" | "q" => Ok(Cmd::Quit),
         "help" | "h" | "?" => Ok(Cmd::Help),
-        other => Err(format!("unknown command: '{}'. Type \\help for commands.", other)),
+        other => Err(format!(
+            "unknown command: '{}'. Type \\help for commands.",
+            other
+        )),
     }
 }
 
@@ -306,7 +309,7 @@ fn execute(cmd: Cmd, engine: &Engine) -> Result<bool> {
             if machines.is_empty() {
                 println!("No machines defined.");
             } else {
-                println!("{:<30} {:>7}  {}", "Name", "Version", "Initial State");
+                println!("{:<30} {:>7}  Initial State", "Name", "Version");
                 println!("{}", "-".repeat(60));
                 for m in &machines {
                     println!("{:<30} {:>7}  {}", m.name, m.version, m.initial_state);
@@ -315,12 +318,10 @@ fn execute(cmd: Cmd, engine: &Engine) -> Result<bool> {
             }
         }
 
-        Cmd::DescribeMachine { name } => {
-            match engine.get_machine(&name) {
-                Ok(m) => print_machine(&m),
-                Err(e) => println!("Error: {}", e),
-            }
-        }
+        Cmd::DescribeMachine { name } => match engine.get_machine(&name) {
+            Ok(m) => print_machine(&m),
+            Err(e) => println!("Error: {}", e),
+        },
 
         Cmd::DescribeEntity { entity_id } => {
             // List all machines and show state of this entity in each
@@ -343,7 +344,10 @@ fn execute(cmd: Cmd, engine: &Engine) -> Result<bool> {
                     }
                     Err(_) => {
                         // Entity not present in this machine — show initial state as default
-                        println!("  {:30}  state={:<20}  (not started)", m.name, m.initial_state);
+                        println!(
+                            "  {:30}  state={:<20}  (not started)",
+                            m.name, m.initial_state
+                        );
                     }
                 }
             }
@@ -352,57 +356,54 @@ fn execute(cmd: Cmd, engine: &Engine) -> Result<bool> {
             }
         }
 
-        Cmd::Current { entity_id, machine } => {
-            match engine.current(&entity_id, &machine) {
-                Ok(state) => {
-                    println!("Entity:    {}", state.entity_id);
-                    println!("Machine:   {}", state.machine);
-                    println!("State:     {}", state.current_state);
-                    println!("Version:   {}", state.version);
-                    println!("Updated:   {}", state.updated_at.format("%Y-%m-%d %H:%M:%S UTC"));
-                }
-                Err(e) => println!("Error: {}", e),
+        Cmd::Current { entity_id, machine } => match engine.current(&entity_id, &machine) {
+            Ok(state) => {
+                println!("Entity:    {}", state.entity_id);
+                println!("Machine:   {}", state.machine);
+                println!("State:     {}", state.current_state);
+                println!("Version:   {}", state.version);
+                println!(
+                    "Updated:   {}",
+                    state.updated_at.format("%Y-%m-%d %H:%M:%S UTC")
+                );
             }
-        }
+            Err(e) => println!("Error: {}", e),
+        },
 
         Cmd::History {
             entity_id,
             machine,
             limit,
-        } => {
-            match engine.history(&entity_id, &machine, limit, None) {
-                Ok(records) if records.is_empty() => {
-                    println!("No history for '{}' in '{}'.", entity_id, machine);
-                }
-                Ok(records) => {
+        } => match engine.history(&entity_id, &machine, limit, None) {
+            Ok(records) if records.is_empty() => {
+                println!("No history for '{}' in '{}'.", entity_id, machine);
+            }
+            Ok(records) => {
+                println!(
+                    "{:>8}  {:<20}  {:<20}  {:<20}  {:<20}  Actor",
+                    "Seq", "Timestamp", "Event", "From", "To"
+                );
+                println!("{}", "-".repeat(100));
+                for r in &records {
                     println!(
                         "{:>8}  {:<20}  {:<20}  {:<20}  {:<20}  {}",
-                        "Seq", "Timestamp", "Event", "From", "To", "Actor"
+                        r.sequence,
+                        r.timestamp.format("%Y-%m-%d %H:%M:%S"),
+                        r.event,
+                        r.from_state,
+                        r.to_state,
+                        r.actor
                     );
-                    println!("{}", "-".repeat(100));
-                    for r in &records {
-                        println!(
-                            "{:>8}  {:<20}  {:<20}  {:<20}  {:<20}  {}",
-                            r.sequence,
-                            r.timestamp.format("%Y-%m-%d %H:%M:%S"),
-                            r.event,
-                            r.from_state,
-                            r.to_state,
-                            r.actor
-                        );
-                    }
-                    println!("\n{} record(s)", records.len());
                 }
-                Err(e) => println!("Error: {}", e),
+                println!("\n{} record(s)", records.len());
             }
-        }
+            Err(e) => println!("Error: {}", e),
+        },
 
         Cmd::Define { source } => {
             // Source can be: a raw JSON string, or @filename to read from file
-            let json_str = if source.starts_with('@') {
-                let path = &source[1..];
-                std::fs::read_to_string(path)
-                    .with_context(|| format!("reading file '{}'", path))?
+            let json_str = if let Some(path) = source.strip_prefix('@') {
+                std::fs::read_to_string(path).with_context(|| format!("reading file '{}'", path))?
             } else {
                 source.clone()
             };
@@ -536,7 +537,7 @@ fn run_repl(engine: &Engine) -> Result<()> {
                 match parse_command(&line) {
                     Ok(cmd) => {
                         match execute(cmd, engine) {
-                            Ok(true) => {} // continue
+                            Ok(true) => {}      // continue
                             Ok(false) => break, // quit
                             Err(e) => println!("Error: {:#}", e),
                         }
@@ -599,15 +600,13 @@ fn main() -> Result<()> {
     if let Some(one_shot) = args.command {
         // -c mode: execute one command and exit
         match parse_command(&one_shot) {
-            Ok(cmd) => {
-                match execute(cmd, &engine) {
-                    Ok(_) => {}
-                    Err(e) => {
-                        eprintln!("Error: {:#}", e);
-                        std::process::exit(1);
-                    }
+            Ok(cmd) => match execute(cmd, &engine) {
+                Ok(_) => {}
+                Err(e) => {
+                    eprintln!("Error: {:#}", e);
+                    std::process::exit(1);
                 }
-            }
+            },
             Err(msg) => {
                 eprintln!("Parse error: {}", msg);
                 std::process::exit(1);

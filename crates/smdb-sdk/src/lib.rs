@@ -45,6 +45,4 @@ pub use response::TransitionResponse;
 pub use subscription::Subscription;
 
 // Re-export core types that consumers will frequently need.
-pub use smdb_core::prelude::{
-    ChangeRecord, EntityState, MachineDefinition, TransitionRecord,
-};
+pub use smdb_core::prelude::{ChangeRecord, EntityState, MachineDefinition, TransitionRecord};

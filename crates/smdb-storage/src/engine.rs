@@ -36,11 +36,7 @@ pub trait StorageEngine: Send + Sync {
     fn upsert_entity_state(&self, state: &EntityState) -> Result<()>;
 
     /// Return all entities that are currently in `state_name` within `machine`.
-    fn list_entities_in_state(
-        &self,
-        machine: &str,
-        state_name: &str,
-    ) -> Result<Vec<EntityState>>;
+    fn list_entities_in_state(&self, machine: &str, state_name: &str) -> Result<Vec<EntityState>>;
 
     // -------------------------------------------------------------------------
     // Transition log (append-only, source of truth)

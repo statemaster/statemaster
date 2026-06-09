@@ -119,6 +119,7 @@ impl Engine {
         self.storage.list_machines().map_err(EngineError::Storage)
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub fn transition(
         &self,
         entity_id: &str,
@@ -176,7 +177,12 @@ impl Engine {
             }
         }
 
-        let rule = FsmPlanner::plan_transition(&definition, &current_state, &event.to_string(), &entity_id.to_string())?;
+        let rule = FsmPlanner::plan_transition(
+            &definition,
+            &current_state,
+            &event.to_string(),
+            &entity_id.to_string(),
+        )?;
 
         let guard_results: HashMap<String, bool> = {
             let registry = self.guards.read();
@@ -209,7 +215,13 @@ impl Engine {
         let effect_rules = FsmPlanner::compute_effects(&definition, &event.to_string());
         let effects: Vec<Effect> = effect_rules
             .iter()
-            .map(|er| Effect::new(record.id.clone(), er.effect.clone(), er.payload.clone().unwrap_or_default()))
+            .map(|er| {
+                Effect::new(
+                    record.id.clone(),
+                    er.effect.clone(),
+                    er.payload.clone().unwrap_or_default(),
+                )
+            })
             .collect();
 
         let new_version = current_version + 1;
@@ -223,7 +235,9 @@ impl Engine {
             created_at,
         };
 
-        let sequence = self.storage.execute_transition(&mut record, &new_state, &effects)?;
+        let sequence = self
+            .storage
+            .execute_transition(&mut record, &new_state, &effects)?;
 
         // Delivery is handled exclusively by the dispatcher reading the log, so
         // the commit path just records durably and wakes it. This keeps a single
@@ -299,11 +313,7 @@ impl Engine {
             let subs = self.subscribers.read();
             for sub in subs.iter() {
                 let mut cursor = sub.delivered_through.load(Ordering::Acquire);
-                'drain: loop {
-                    let records = match self.storage.get_transitions_after(cursor, BATCH) {
-                        Ok(r) => r,
-                        Err(_) => break,
-                    };
+                'drain: while let Ok(records) = self.storage.get_transitions_after(cursor, BATCH) {
                     if records.is_empty() {
                         break;
                     }
@@ -378,7 +388,14 @@ mod tests {
         MachineBuilder::new()
             .name("fulfillment")
             .version(1)
-            .states(["pending", "paid", "packed", "shipped", "delivered", "canceled"])
+            .states([
+                "pending",
+                "paid",
+                "packed",
+                "shipped",
+                "delivered",
+                "canceled",
+            ])
             .initial_state("pending")
             .transition("pay", ["pending"], "paid")
             .transition("pack", ["paid"], "packed")
@@ -406,7 +423,15 @@ mod tests {
         engine.define_machine(order_machine()).unwrap();
 
         let result = engine
-            .transition("order_1", "fulfillment", "pay", "user:alice", serde_json::json!({}), None, None)
+            .transition(
+                "order_1",
+                "fulfillment",
+                "pay",
+                "user:alice",
+                serde_json::json!({}),
+                None,
+                None,
+            )
             .unwrap();
 
         assert_eq!(result.from_state, "pending");
@@ -424,7 +449,13 @@ mod tests {
         engine.define_machine(order_machine()).unwrap();
 
         let result = engine.transition(
-            "order_1", "fulfillment", "deliver", "user:alice", serde_json::json!({}), None, None,
+            "order_1",
+            "fulfillment",
+            "deliver",
+            "user:alice",
+            serde_json::json!({}),
+            None,
+            None,
         );
         assert!(result.is_err());
     }
@@ -434,11 +465,25 @@ mod tests {
         let engine = test_engine();
         engine.define_machine(order_machine()).unwrap();
         engine
-            .transition("order_1", "fulfillment", "pay", "user:alice", serde_json::json!({}), None, None)
+            .transition(
+                "order_1",
+                "fulfillment",
+                "pay",
+                "user:alice",
+                serde_json::json!({}),
+                None,
+                None,
+            )
             .unwrap();
 
         let result = engine.transition(
-            "order_1", "fulfillment", "pack", "user:bob", serde_json::json!({}), Some(0), None,
+            "order_1",
+            "fulfillment",
+            "pack",
+            "user:bob",
+            serde_json::json!({}),
+            Some(0),
+            None,
         );
         assert!(result.is_err());
     }
@@ -450,14 +495,36 @@ mod tests {
         engine.register_guard("payment_captured", Arc::new(|_, _| false));
 
         engine
-            .transition("order_1", "fulfillment", "pay", "u", serde_json::json!({}), None, None)
+            .transition(
+                "order_1",
+                "fulfillment",
+                "pay",
+                "u",
+                serde_json::json!({}),
+                None,
+                None,
+            )
             .unwrap();
         engine
-            .transition("order_1", "fulfillment", "pack", "u", serde_json::json!({}), None, None)
+            .transition(
+                "order_1",
+                "fulfillment",
+                "pack",
+                "u",
+                serde_json::json!({}),
+                None,
+                None,
+            )
             .unwrap();
 
         let result = engine.transition(
-            "order_1", "fulfillment", "ship", "u", serde_json::json!({}), None, None,
+            "order_1",
+            "fulfillment",
+            "ship",
+            "u",
+            serde_json::json!({}),
+            None,
+            None,
         );
         assert!(result.is_err());
     }
@@ -467,13 +534,31 @@ mod tests {
         let engine = test_engine();
         engine.define_machine(order_machine()).unwrap();
         engine
-            .transition("order_1", "fulfillment", "pay", "u", serde_json::json!({}), None, None)
+            .transition(
+                "order_1",
+                "fulfillment",
+                "pay",
+                "u",
+                serde_json::json!({}),
+                None,
+                None,
+            )
             .unwrap();
         engine
-            .transition("order_1", "fulfillment", "pack", "u", serde_json::json!({}), None, None)
+            .transition(
+                "order_1",
+                "fulfillment",
+                "pack",
+                "u",
+                serde_json::json!({}),
+                None,
+                None,
+            )
             .unwrap();
 
-        let history = engine.history("order_1", "fulfillment", None, None).unwrap();
+        let history = engine
+            .history("order_1", "fulfillment", None, None)
+            .unwrap();
         assert_eq!(history.len(), 2);
         assert_eq!(history[0].from_state, "pending");
         assert_eq!(history[1].from_state, "paid");
@@ -485,12 +570,28 @@ mod tests {
         engine.define_machine(order_machine()).unwrap();
 
         engine
-            .transition("order_1", "fulfillment", "pay", "u", serde_json::json!({}), None, None)
+            .transition(
+                "order_1",
+                "fulfillment",
+                "pay",
+                "u",
+                serde_json::json!({}),
+                None,
+                None,
+            )
             .unwrap();
         let after_first = engine.current("order_1", "fulfillment").unwrap();
 
         engine
-            .transition("order_1", "fulfillment", "pack", "u", serde_json::json!({}), None, None)
+            .transition(
+                "order_1",
+                "fulfillment",
+                "pack",
+                "u",
+                serde_json::json!({}),
+                None,
+                None,
+            )
             .unwrap();
         let after_second = engine.current("order_1", "fulfillment").unwrap();
 
@@ -507,13 +608,23 @@ mod tests {
 
         let first = engine
             .transition(
-                "order_1", "fulfillment", "pay", "u", serde_json::json!({}), None,
+                "order_1",
+                "fulfillment",
+                "pay",
+                "u",
+                serde_json::json!({}),
+                None,
                 Some("idem-1".to_string()),
             )
             .unwrap();
         let replay = engine
             .transition(
-                "order_1", "fulfillment", "pay", "u", serde_json::json!({}), None,
+                "order_1",
+                "fulfillment",
+                "pay",
+                "u",
+                serde_json::json!({}),
+                None,
                 Some("idem-1".to_string()),
             )
             .unwrap();
@@ -534,13 +645,37 @@ mod tests {
             .unwrap();
 
         engine
-            .transition("o1", "fulfillment", "pay", "u", serde_json::json!({}), None, None)
+            .transition(
+                "o1",
+                "fulfillment",
+                "pay",
+                "u",
+                serde_json::json!({}),
+                None,
+                None,
+            )
             .unwrap();
         engine
-            .transition("o1", "fulfillment", "pack", "u", serde_json::json!({}), None, None)
+            .transition(
+                "o1",
+                "fulfillment",
+                "pack",
+                "u",
+                serde_json::json!({}),
+                None,
+                None,
+            )
             .unwrap();
         engine
-            .transition("o1", "fulfillment", "ship", "u", serde_json::json!({}), None, None)
+            .transition(
+                "o1",
+                "fulfillment",
+                "ship",
+                "u",
+                serde_json::json!({}),
+                None,
+                None,
+            )
             .unwrap();
 
         assert_eq!(engine.dispatch_pass(), 3);
@@ -582,10 +717,26 @@ mod tests {
             .unwrap();
 
         engine
-            .transition("o1", "fulfillment", "pay", "u", serde_json::json!({}), None, None)
+            .transition(
+                "o1",
+                "fulfillment",
+                "pay",
+                "u",
+                serde_json::json!({}),
+                None,
+                None,
+            )
             .unwrap();
         engine
-            .transition("o1", "payment", "capture", "u", serde_json::json!({}), None, None)
+            .transition(
+                "o1",
+                "payment",
+                "capture",
+                "u",
+                serde_json::json!({}),
+                None,
+                None,
+            )
             .unwrap();
 
         engine.dispatch_pass();
@@ -616,10 +767,26 @@ mod tests {
         engine.define_machine(payment).unwrap();
 
         engine
-            .transition("order_1", "fulfillment", "pay", "u", serde_json::json!({}), None, None)
+            .transition(
+                "order_1",
+                "fulfillment",
+                "pay",
+                "u",
+                serde_json::json!({}),
+                None,
+                None,
+            )
             .unwrap();
         engine
-            .transition("order_1", "payment", "capture", "u", serde_json::json!({}), None, None)
+            .transition(
+                "order_1",
+                "payment",
+                "capture",
+                "u",
+                serde_json::json!({}),
+                None,
+                None,
+            )
             .unwrap();
 
         let f = engine.current("order_1", "fulfillment").unwrap();
