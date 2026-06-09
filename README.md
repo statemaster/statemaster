@@ -1,4 +1,4 @@
-### Statemaster
+<h1 align="center">StateMaster</h1>
 
 <p align="center">
   <img src="brand/smdb.png" alt="StateMaster — the state-machine database" width="240">
