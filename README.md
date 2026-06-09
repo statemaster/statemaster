@@ -1,5 +1,7 @@
+### Statemaster
+
 <p align="center">
-  <img src="brand/smdb.png" alt="StateMaster — the state-machine database" width="440">
+  <img src="brand/smdb.png" alt="StateMaster — the state-machine database" width="240">
 </p>
 
 <p align="center">
