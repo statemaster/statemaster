@@ -1,0 +1,106 @@
+name: release
+
+# On a pushed `v*` tag: build a prebuilt Homebrew bottle per platform, attach
+# them to the GitHub Release, then rewrite Formula/statemaster.rb on `main` with
+# the source sha + the bottle checksums so `brew install` pours the bottle.
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Tag to build (e.g. v0.1.0)"
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  bottle:
+    name: bottle / ${{ matrix.bottle_tag }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-14
+            bottle_tag: arm64_sonoma
+          - os: macos-13
+            bottle_tag: ventura
+          - os: ubuntu-22.04
+            bottle_tag: x86_64_linux
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.tag || github.ref_name }}
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Resolve version
+        id: ver
+        shell: bash
+        run: |
+          TAG="${{ github.event.inputs.tag || github.ref_name }}"
+          echo "version=${TAG#v}" >> "$GITHUB_OUTPUT"
+
+      - name: Build bottle
+        id: build
+        shell: bash
+        env:
+          VERSION: ${{ steps.ver.outputs.version }}
+          BOTTLE_TAG: ${{ matrix.bottle_tag }}
+        run: bash scripts/build-bottle.sh
+
+      - name: Attach bottle to the release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.event.inputs.tag || github.ref_name }}
+          files: ${{ steps.build.outputs.tarball }}
+
+      - name: Upload checksum artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: sha-${{ matrix.bottle_tag }}
+          path: sha-${{ matrix.bottle_tag }}.txt
+
+  publish-formula:
+    name: update formula bottle block
+    needs: bottle
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+
+      - name: Resolve version
+        id: ver
+        shell: bash
+        run: |
+          TAG="${{ github.event.inputs.tag || github.ref_name }}"
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "version=${TAG#v}" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: sha-*
+          merge-multiple: true
+          path: shas
+
+      - name: Regenerate formula
+        shell: bash
+        env:
+          VERSION: ${{ steps.ver.outputs.version }}
+          TAG: ${{ steps.ver.outputs.tag }}
+        run: bash scripts/update-formula.sh
+
+      - name: Commit formula
+        shell: bash
+        run: |
+          if git diff --quiet -- Formula/statemaster.rb; then
+            echo "formula unchanged"; exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add Formula/statemaster.rb
+          git commit -m "Update Homebrew bottles for ${{ steps.ver.outputs.tag }} [skip ci]"
+          git push origin main
