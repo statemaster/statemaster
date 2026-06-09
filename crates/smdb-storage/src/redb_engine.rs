@@ -8,6 +8,7 @@
 //!  transitions_by_id  key: transition_id (str)          val: global_sequence (u64)
 //!  entity_transitions key: "entity_id\x00machine\x00seq" (str) val: global_sequence (u64)
 //!  effects            key: effect_id (str)              val: msgpack(Effect)
+//!  effects_by_txn     key: "transition_id\x00effect_id" val: effect_id (str)
 //!  idempotency        key: key (str)                    val: global_sequence (u64)
 //!  meta               key: "sequence" (str)             val: current_sequence (u64)
 
@@ -29,6 +30,8 @@ const TRANSITIONS_BY_ID: TableDefinition<&str, u64> = TableDefinition::new("tran
 const ENTITY_TRANSITIONS: TableDefinition<&str, u64> =
     TableDefinition::new("entity_transitions");
 const EFFECTS: TableDefinition<&str, &[u8]> = TableDefinition::new("effects");
+const EFFECTS_BY_TXN: TableDefinition<&str, &str> =
+    TableDefinition::new("effects_by_txn");
 const IDEMPOTENCY: TableDefinition<&str, u64> = TableDefinition::new("idempotency");
 const META: TableDefinition<&str, u64> = TableDefinition::new("meta");
 
@@ -76,6 +79,7 @@ impl RedbEngine {
         tx.open_table(TRANSITIONS_BY_ID)?;
         tx.open_table(ENTITY_TRANSITIONS)?;
         tx.open_table(EFFECTS)?;
+        tx.open_table(EFFECTS_BY_TXN)?;
         tx.open_table(IDEMPOTENCY)?;
         tx.open_table(META)?;
         tx.commit()?;
@@ -93,6 +97,14 @@ impl RedbEngine {
 
     fn entity_transition_prefix(entity_id: &str, machine: &str) -> String {
         format!("{}\x00{}\x00", entity_id, machine)
+    }
+
+    fn effect_by_txn_key(transition_id: &str, effect_id: &str) -> String {
+        format!("{}\x00{}", transition_id, effect_id)
+    }
+
+    fn effect_by_txn_prefix(transition_id: &str) -> String {
+        format!("{}\x00", transition_id)
     }
 
     fn next_sequence_in_tx(
@@ -318,9 +330,12 @@ impl StorageEngine for RedbEngine {
         let tx = self.db.begin_write()?;
         {
             let mut tbl = tx.open_table(EFFECTS)?;
+            let mut by_txn = tx.open_table(EFFECTS_BY_TXN)?;
             for effect in effects {
                 let bytes = rmp_serde::to_vec(effect)?;
                 tbl.insert(effect.id.as_str(), bytes.as_slice())?;
+                let key = Self::effect_by_txn_key(&effect.transition_id, &effect.id);
+                by_txn.insert(key.as_str(), effect.id.as_str())?;
             }
         }
         tx.commit()?;
@@ -343,6 +358,24 @@ impl StorageEngine for RedbEngine {
             }
         }
 
+        Ok(results)
+    }
+
+    fn get_effects_for_transition(&self, transition_id: &str) -> Result<Vec<Effect>> {
+        let prefix = Self::effect_by_txn_prefix(transition_id);
+        let tx = self.db.begin_read()?;
+        let by_txn = tx.open_table(EFFECTS_BY_TXN)?;
+        let effects_tbl = tx.open_table(EFFECTS)?;
+        let mut results = Vec::new();
+        for entry in by_txn.range(prefix.as_str()..)? {
+            let (k, v) = entry?;
+            if !k.value().starts_with(prefix.as_str()) {
+                break;
+            }
+            if let Some(bytes) = effects_tbl.get(v.value())? {
+                results.push(rmp_serde::from_slice(bytes.value())?);
+            }
+        }
         Ok(results)
     }
 
@@ -422,12 +455,16 @@ impl StorageEngine for RedbEngine {
             tbl.insert(key.as_str(), state_bytes.as_slice())?;
         }
 
-        // 3. Insert effects into the outbox.
+        // 3. Insert effects into the outbox (+ the by-transition index used to
+        //    reconstruct change records during stream delivery).
         {
             let mut tbl = tx.open_table(EFFECTS)?;
+            let mut by_txn = tx.open_table(EFFECTS_BY_TXN)?;
             for effect in effects {
                 let bytes = rmp_serde::to_vec(effect)?;
                 tbl.insert(effect.id.as_str(), bytes.as_slice())?;
+                let key = Self::effect_by_txn_key(&effect.transition_id, &effect.id);
+                by_txn.insert(key.as_str(), effect.id.as_str())?;
             }
         }
 

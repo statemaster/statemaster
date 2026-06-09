@@ -1,5 +1,6 @@
 use std::fs::File;
 use std::io::BufReader;
+use std::sync::atomic::{AtomicI64, AtomicU64, Ordering};
 use std::sync::Arc;
 
 use futures::{SinkExt, StreamExt};
@@ -16,7 +17,7 @@ use smdb_proto::{
     ProtoError, PROTOCOL_VERSION, SERVER_VERSION,
 };
 use tokio::net::{TcpListener, TcpStream};
-use tokio::sync::{mpsc, Mutex};
+use tokio::sync::{mpsc, watch, Mutex};
 use tokio_rustls::TlsAcceptor;
 use tokio_util::codec::Framed;
 use tracing::{debug, error, info, warn};
@@ -30,10 +31,20 @@ use crate::session::Session;
 type SharedSink<T> =
     Arc<Mutex<futures::stream::SplitSink<Framed<T, FrameCodec>, Frame>>>;
 
+/// Connection and transition counters, shared with the daemon's metrics
+/// endpoint. The connection layer owns these so there is one source of truth.
+#[derive(Debug, Default)]
+pub struct ServerMetrics {
+    pub connections_total: AtomicU64,
+    pub connections_active: AtomicI64,
+    pub transitions_total: AtomicU64,
+}
+
 pub struct Server {
     config: ServerConfig,
     engine: Arc<Engine>,
     tls_config: Option<Arc<rustls::ServerConfig>>,
+    metrics: Arc<ServerMetrics>,
 }
 
 impl Server {
@@ -44,18 +55,53 @@ impl Server {
             config,
             engine,
             tls_config,
+            metrics: Arc::new(ServerMetrics::default()),
         })
+    }
+
+    /// Shared metrics handle for an external observer (e.g. a `/metrics` HTTP
+    /// endpoint).
+    pub fn metrics(&self) -> Arc<ServerMetrics> {
+        Arc::clone(&self.metrics)
     }
 
     /// Bind TCP and accept client connections in a loop, spawning a task per connection.
     pub async fn run(&self) -> Result<()> {
         let listener = TcpListener::bind(&self.config.listen_addr).await?;
         info!("smdb-wire listening on {}", self.config.listen_addr);
+        self.serve(listener).await
+    }
 
+    /// Accept connections on an already-bound listener, running until the
+    /// listener errors. Splitting bind from serve lets callers (and tests) bind
+    /// an ephemeral port and learn the assigned address before accepting.
+    pub async fn serve(&self, listener: TcpListener) -> Result<()> {
+        // A receiver that never fires — i.e. serve forever.
+        let (_tx, never) = watch::channel(false);
+        self.serve_with_shutdown(listener, never).await
+    }
+
+    /// Like [`serve`], but stops accepting new connections once `shutdown`
+    /// transitions to `true`. In-flight connections are not force-closed; they
+    /// end when their client disconnects or the runtime is dropped.
+    pub async fn serve_with_shutdown(
+        &self,
+        listener: TcpListener,
+        mut shutdown: watch::Receiver<bool>,
+    ) -> Result<()> {
         let semaphore = Arc::new(tokio::sync::Semaphore::new(self.config.max_connections));
 
         loop {
-            let (stream, peer_addr) = listener.accept().await?;
+            let (stream, peer_addr) = tokio::select! {
+                _ = shutdown.changed() => {
+                    if *shutdown.borrow() {
+                        info!("smdb-wire shutting down, no longer accepting connections");
+                        return Ok(());
+                    }
+                    continue;
+                }
+                accepted = listener.accept() => accepted?,
+            };
             info!("accepted connection from {}", peer_addr);
 
             let permit = match semaphore.clone().try_acquire_owned() {
@@ -72,10 +118,17 @@ impl Server {
             let engine = Arc::clone(&self.engine);
             let config = self.config.clone();
             let tls_config = self.tls_config.clone();
+            let metrics = Arc::clone(&self.metrics);
+
+            metrics.connections_total.fetch_add(1, Ordering::Relaxed);
+            metrics.connections_active.fetch_add(1, Ordering::Relaxed);
 
             tokio::spawn(async move {
                 let _permit = permit;
-                if let Err(e) = handle_connection(stream, engine, config, tls_config).await {
+                let conn_metrics = Arc::clone(&metrics);
+                if let Err(e) =
+                    handle_connection(stream, engine, config, tls_config, metrics).await
+                {
                     match e {
                         WireError::ConnectionClosed => {
                             debug!("connection from {} closed", peer_addr)
@@ -83,6 +136,7 @@ impl Server {
                         other => error!("connection error from {}: {}", peer_addr, other),
                     }
                 }
+                conn_metrics.connections_active.fetch_sub(1, Ordering::Relaxed);
             });
         }
     }
@@ -94,6 +148,7 @@ async fn handle_connection(
     engine: Arc<Engine>,
     config: ServerConfig,
     tls_config: Option<Arc<rustls::ServerConfig>>,
+    metrics: Arc<ServerMetrics>,
 ) -> Result<()> {
     if let Some(tls_cfg) = tls_config {
         let acceptor = TlsAcceptor::from(tls_cfg);
@@ -101,9 +156,9 @@ async fn handle_connection(
             .accept(stream)
             .await
             .map_err(|e| WireError::Tls(e.to_string()))?;
-        serve_framed(Framed::new(tls_stream, FrameCodec), engine, config).await
+        serve_framed(Framed::new(tls_stream, FrameCodec), engine, config, metrics).await
     } else {
-        serve_framed(Framed::new(stream, FrameCodec), engine, config).await
+        serve_framed(Framed::new(stream, FrameCodec), engine, config, metrics).await
     }
 }
 
@@ -112,6 +167,7 @@ async fn serve_framed<T>(
     framed: Framed<T, FrameCodec>,
     engine: Arc<Engine>,
     config: ServerConfig,
+    metrics: Arc<ServerMetrics>,
 ) -> Result<()>
 where
     T: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static,
@@ -171,7 +227,7 @@ where
 
     let auth: AuthMessage = decode_message(&auth_frame)?;
 
-    if !config.auth_tokens.iter().any(|t| t == &auth.token) {
+    if !token_is_valid(&config.auth_tokens, &auth.token) {
         let frame = encode_message(
             FrameTag::AuthError,
             &ErrorMessage {
@@ -266,8 +322,41 @@ where
             continue;
         }
 
-        // All other frames go through handle_frame (synchronous, no await needed inside).
-        let response_frames = handle_frame(&mut session, &engine, frame);
+        if tag == FrameTag::Unsubscribe {
+            match decode_message::<UnsubscribeMessage>(&frame) {
+                Ok(msg) => {
+                    engine.unsubscribe(&msg.subscription_id);
+                    session.subscriptions.remove(&msg.subscription_id);
+                }
+                Err(e) => {
+                    sink.lock()
+                        .await
+                        .send(make_error_frame(&e.to_string(), false))
+                        .await
+                        .ok();
+                }
+            }
+            continue;
+        }
+
+        // All remaining frames hit the synchronous, blocking engine/storage, so
+        // run them on a blocking worker to keep the reactor free.
+        let engine_for_task = Arc::clone(&engine);
+        let session_id_for_task = session_id.clone();
+        let metrics_for_task = Arc::clone(&metrics);
+        let response_frames =
+            match tokio::task::spawn_blocking(move || {
+                handle_frame(&engine_for_task, &session_id_for_task, &metrics_for_task, frame)
+            })
+            .await
+            {
+                Ok(frames) => frames,
+                Err(join_err) => {
+                    error!("session {}: worker task failed: {}", session_id, join_err);
+                    vec![make_error_frame("internal server error", false)]
+                }
+            };
+
         let mut guard = sink.lock().await;
         for f in response_frames {
             if let Err(e) = guard.send(f).await {
@@ -290,9 +379,18 @@ where
 /// Dispatch a single frame to the appropriate handler. Returns zero or more
 /// response frames to be sent back to the client.
 ///
-/// This function is deliberately synchronous — all I/O is handled by the caller
-/// so that we avoid holding a `Mutex` guard across an await point here.
-fn handle_frame(session: &mut Session, engine: &Arc<Engine>, frame: Frame) -> Vec<Frame> {
+/// This function is deliberately synchronous and free of session mutation so it
+/// can be run on a blocking worker via `spawn_blocking` — the engine and the
+/// `redb` storage underneath it are blocking, and running them directly on the
+/// async reactor would stall every other connection (and, for the entity lock,
+/// previously panicked). Session-mutating frames (Subscribe/Unsubscribe) are
+/// handled by the async caller instead.
+fn handle_frame(
+    engine: &Arc<Engine>,
+    session_id: &str,
+    metrics: &Arc<ServerMetrics>,
+    frame: Frame,
+) -> Vec<Frame> {
     match frame.tag {
         FrameTag::Ping => vec![Frame {
             tag: FrameTag::Pong,
@@ -335,7 +433,10 @@ fn handle_frame(session: &mut Session, engine: &Arc<Engine>, frame: Frame) -> Ve
                 msg.expected_version,
                 msg.idempotency_key,
             ) {
-                Ok(result) => vec![make_transition_result_frame(request_id, result)],
+                Ok(result) => {
+                    metrics.transitions_total.fetch_add(1, Ordering::Relaxed);
+                    vec![make_transition_result_frame(request_id, result)]
+                }
                 Err(e) => vec![make_rejection_frame(request_id, &e)],
             }
         }
@@ -392,18 +493,8 @@ fn handle_frame(session: &mut Session, engine: &Arc<Engine>, frame: Frame) -> Ve
             vec![]
         }
 
-        FrameTag::Unsubscribe => {
-            let msg: UnsubscribeMessage = match decode_message(&frame) {
-                Ok(m) => m,
-                Err(e) => return vec![make_error_frame(&e.to_string(), false)],
-            };
-            engine.unsubscribe(&msg.subscription_id);
-            session.subscriptions.remove(&msg.subscription_id);
-            vec![]
-        }
-
         other => {
-            warn!("session {}: unexpected frame tag {:?}", session.id, other);
+            warn!("session {}: unexpected frame tag {:?}", session_id, other);
             vec![make_error_frame(
                 &format!("unexpected frame {:?}", other),
                 false,
@@ -570,6 +661,29 @@ fn make_rejection_frame(request_id: u64, err: &EngineError) -> Frame {
         },
     )
     .unwrap_or_else(|e| make_error_frame(&e.to_string(), false))
+}
+
+/// Validate a presented bearer token against the configured set in
+/// constant time, without short-circuiting on the first match, so that a
+/// timing observer cannot learn how many tokens were compared or how much of
+/// a token matched. The length of a token is not treated as secret.
+fn token_is_valid(valid: &[String], presented: &str) -> bool {
+    let mut matched = false;
+    for token in valid {
+        matched |= ct_eq(token.as_bytes(), presented.as_bytes());
+    }
+    matched
+}
+
+fn ct_eq(a: &[u8], b: &[u8]) -> bool {
+    if a.len() != b.len() {
+        return false;
+    }
+    let mut diff = 0u8;
+    for (x, y) in a.iter().zip(b.iter()) {
+        diff |= x ^ y;
+    }
+    diff == 0
 }
 
 /// Send a fatal error frame — best-effort, ignores write errors.

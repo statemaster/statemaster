@@ -1,6 +1,11 @@
-# StateMaster
+<p align="center">
+  <img src="brand/smdb.png" alt="StateMaster — the state-machine database" width="440">
+</p>
 
-**A state-machine database. One job, done exceptionally well: own the lifecycle of every entity — validate transitions, enforce guards, and remember everywhere each entity has been.**
+<p align="center">
+  <strong>A state-machine database. One job, done exceptionally well:</strong><br>
+  own the lifecycle of every entity — validate transitions, enforce guards, and remember everywhere each entity has been.
+</p>
 
 ---
 

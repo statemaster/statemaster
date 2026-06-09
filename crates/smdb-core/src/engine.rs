@@ -93,6 +93,7 @@ impl FsmPlanner {
             actor,
             ctx,
             idempotency_key,
+            version: 0,
             timestamp: Utc::now(),
         }
     }

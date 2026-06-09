@@ -471,6 +471,8 @@ Client                             Server
 - **At-least-once.** A crash between commit and dispatch causes re-delivery, never loss. Consumers must deduplicate on `transition_id` or `sequence`.
 - **No gaps.** The `sequence` counter is monotonic and gap-free; a subscriber that receives sequences 100, 101, 103 without receiving 102 indicates a bug.
 
+> **v1 implementation note.** Both backfill and live tail are delivered by a single path: a background **dispatcher** reads the committed transition log and fans change records out to subscribers, advancing a per-subscriber cursor. Because the cursor only advances once a record has been handed to the connection, and because the log (not an in-memory queue) is the source of truth, delivery is at-least-once and replayable — a subscriber that reconnects with its last `after_sequence` re-reads anything it missed. Consumers must dedupe on `sequence`/`transition_id`.
+
 ### Multiple subscriptions
 
 A single connection supports multiple independent subscriptions. Each has its own `subscription_id`, its own cursor, and its own filter. `ChangeRecord` frames from different subscriptions interleave freely; the `subscription_id` field distinguishes them.

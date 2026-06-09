@@ -261,12 +261,12 @@ Conceptual tables (physical layout is the storage engine's concern):
 |---|---|---|
 | `machines` | Registered machine definitions | `name`, `version`, `definition`, `created_at` |
 | `entity_state` | The projection — current position per entity per machine | `entity_id`, `machine`, `current_state`, `version`, `updated_at` |
-| `transitions` | Append-only log — **source of truth** | `id`, `sequence`, `entity_id`, `machine`, `from_state`, `to_state`, `event`, `actor`, `ctx`, `ts` |
+| `transitions` | Append-only log — **source of truth** | `id`, `sequence`, `entity_id`, `machine`, `from_state`, `to_state`, `event`, `actor`, `ctx`, `version`, `ts` |
 | `outbox` | Effects awaiting publication | `id`, `transition_id`, `payload`, `status`, `created_at` |
 
 Notes:
 - `entity_state` is keyed by `(entity_id, machine)` to support multiple concurrent machines per entity.
-- `version` on `entity_state` powers optimistic concurrency and is bumped on every transition.
+- `version` on `entity_state` powers optimistic concurrency and is bumped on every transition. The same post-transition `version` is also stamped on the `transitions` log row, so a change record reconstructed from the log during backfill carries the correct entity version (not a placeholder).
 - `sequence` on `transitions` is a monotonic, gap-free global counter that doubles as the change-stream offset (see [Change records](#change-records--change-stream)).
 - A machine `definition` is data, not code. Guards/effects that need real logic are registered handlers referenced by name from the definition.
 - Indexes needed at minimum: `entity_state(entity_id, machine)` (unique), `transitions(entity_id, machine, ts)`, `transitions(sequence)` (unique), `outbox(status, created_at)`.
@@ -526,7 +526,7 @@ This is the bit that makes StateMaster more than storage: other systems treat it
 
 - **Atomicity** — the transition record, projection update, and outbox insert all commit in one storage transaction. Either all land or none do.
 - **Isolation** — per-entity row locks plus a version check prevent two concurrent transitions on the same entity from corrupting the lifecycle. Different entities never contend.
-- **Effect delivery** — at-least-once. Change records go through the outbox and are published by the dispatcher after commit, so a crash between commit and publish results in re-delivery, not loss. Subscribers must be idempotent.
+- **Effect delivery** — at-least-once. After commit the dispatcher reads the transition log and fans change records (with their effects, reconstructed from the log) out to subscribers, advancing a per-subscriber cursor; a crash between commit and delivery results in re-delivery on reconnect, not loss. Backfill and live tail share this one path, so there is no inline best-effort send to drift out of sync. Subscribers must be idempotent.
 - **Durability** — WAL fsync before acknowledging a transition (configurable: `synchronous` vs `relaxed` for throughput).
 - **The dual-write boundary** — because StateMaster owns *state* and the caller owns *domain data*, a transition and the caller's data write are not one transaction across systems. v1 documents this honestly; the change stream is the recommended pattern for keeping caller-side data in sync.
 

@@ -1,10 +1,18 @@
 use std::collections::HashMap;
+use std::hash::{Hash, Hasher};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
 use chrono::{DateTime, Utc};
 use parking_lot::{Mutex, RwLock};
 use serde::{Deserialize, Serialize};
-use tokio::sync::{mpsc, watch};
+use tokio::sync::{mpsc, watch, Notify};
+
+/// Number of entity lock stripes. Transitions on the same `(entity, machine)`
+/// always hash to the same stripe and therefore serialise; distinct entities
+/// only contend on hash collision. Fixed size keeps memory bounded regardless
+/// of how many distinct entities are seen.
+const ENTITY_LOCK_STRIPES: usize = 1024;
 
 use smdb_core::prelude::*;
 use smdb_storage::StorageEngine;
@@ -28,13 +36,24 @@ struct Subscriber {
     id: String,
     machine_filter: Option<String>,
     sender: mpsc::UnboundedSender<ChangeRecord>,
+    /// Highest sequence already delivered to this subscriber. The dispatcher is
+    /// the sole writer to `sender`, so advancing this monotonically guarantees
+    /// in-order, gap-free delivery (and at-least-once: a record is only skipped
+    /// once it has been handed to the channel).
+    delivered_through: AtomicU64,
 }
 
 pub struct Engine {
     storage: Arc<dyn StorageEngine>,
     guards: Arc<RwLock<GuardRegistry>>,
-    entity_locks: Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>,
+    /// Striped per-entity locks. A `parking_lot::Mutex` (not a tokio mutex) so
+    /// it can be taken from a blocking context without panicking; the engine is
+    /// synchronous and is driven from `spawn_blocking` by the wire layer.
+    entity_locks: Vec<Mutex<()>>,
     subscribers: Arc<RwLock<Vec<Subscriber>>>,
+    /// Signalled after every committed transition so the dispatcher can wake and
+    /// fan new change records out to subscribers without waiting for its poll.
+    commit_notify: Arc<Notify>,
     shutdown_tx: watch::Sender<bool>,
     shutdown_rx: watch::Receiver<bool>,
 }
@@ -45,11 +64,26 @@ impl Engine {
         Self {
             storage,
             guards: Arc::new(RwLock::new(GuardRegistry::new())),
-            entity_locks: Mutex::new(HashMap::new()),
+            entity_locks: (0..ENTITY_LOCK_STRIPES).map(|_| Mutex::new(())).collect(),
             subscribers: Arc::new(RwLock::new(Vec::new())),
+            commit_notify: Arc::new(Notify::new()),
             shutdown_tx,
             shutdown_rx,
         }
+    }
+
+    /// A handle the dispatcher awaits to be woken on each commit.
+    pub fn commit_notify(&self) -> Arc<Notify> {
+        Arc::clone(&self.commit_notify)
+    }
+
+    /// Map an `(entity, machine)` pair to its lock stripe.
+    fn entity_lock(&self, entity_id: &str, machine: &str) -> &Mutex<()> {
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        entity_id.hash(&mut hasher);
+        machine.hash(&mut hasher);
+        let idx = (hasher.finish() as usize) % ENTITY_LOCK_STRIPES;
+        &self.entity_locks[idx]
     }
 
     pub fn storage(&self) -> &Arc<dyn StorageEngine> {
@@ -99,6 +133,11 @@ impl Engine {
             return Err(EngineError::ShuttingDown);
         }
 
+        // Serialise on the entity stripe *before* the idempotency check so that
+        // two concurrent retries carrying the same key cannot both miss it and
+        // race into a duplicate transition.
+        let _guard = self.entity_lock(entity_id, machine_name).lock();
+
         if let Some(ref key) = idempotency_key {
             if let Ok(Some(existing)) = self.storage.check_idempotency(key) {
                 return Ok(TransitionResult {
@@ -106,7 +145,7 @@ impl Engine {
                     machine: existing.machine.clone(),
                     from_state: existing.from_state.clone(),
                     to_state: existing.to_state.clone(),
-                    version: 0,
+                    version: existing.version,
                     transition_id: existing.id.clone(),
                     sequence: existing.sequence,
                     timestamp: existing.timestamp,
@@ -114,25 +153,17 @@ impl Engine {
             }
         }
 
-        let lock_key = format!("{}:{}", entity_id, machine_name);
-        let entity_lock = {
-            let mut locks = self.entity_locks.lock();
-            locks
-                .entry(lock_key)
-                .or_insert_with(|| Arc::new(tokio::sync::Mutex::new(())))
-                .clone()
-        };
-        let _guard = entity_lock.blocking_lock();
-
         let definition = self.storage.get_machine(machine_name, None)?;
 
-        let (current_state, current_version) = match self.storage.get_entity_state(entity_id, machine_name) {
-            Ok(state) => (state.current_state.clone(), state.version),
-            Err(smdb_storage::StorageError::NotFound(_)) => {
-                (definition.initial_state.clone(), 0)
-            }
-            Err(e) => return Err(EngineError::Storage(e)),
-        };
+        let now = Utc::now();
+        let (current_state, current_version, created_at) =
+            match self.storage.get_entity_state(entity_id, machine_name) {
+                Ok(state) => (state.current_state.clone(), state.version, state.created_at),
+                Err(smdb_storage::StorageError::NotFound(_)) => {
+                    (definition.initial_state.clone(), 0, now)
+                }
+                Err(e) => return Err(EngineError::Storage(e)),
+            };
 
         if let Some(expected) = expected_version {
             if expected != current_version {
@@ -182,50 +213,22 @@ impl Engine {
             .collect();
 
         let new_version = current_version + 1;
-        let now = Utc::now();
+        record.version = new_version;
         let new_state = EntityState {
             entity_id: entity_id.to_string(),
             machine: machine_name.to_string(),
             current_state: rule.to_state.clone(),
             version: new_version,
             updated_at: now,
-            created_at: if current_version == 0 { now } else { now },
+            created_at,
         };
 
         let sequence = self.storage.execute_transition(&mut record, &new_state, &effects)?;
 
-        let change = ChangeRecord {
-            sequence,
-            transition_id: record.id.clone(),
-            entity_id: entity_id.to_string(),
-            machine: machine_name.to_string(),
-            from_state: current_state.clone(),
-            to_state: rule.to_state.clone(),
-            event: event.to_string(),
-            actor: actor.to_string(),
-            version: new_version,
-            timestamp: record.timestamp,
-            ctx,
-            effects: effects
-                .iter()
-                .map(|e| EffectPayload {
-                    effect_name: e.effect_name.clone(),
-                    payload: e.payload.clone(),
-                })
-                .collect(),
-        };
-
-        {
-            let subs = self.subscribers.read();
-            for sub in subs.iter() {
-                if let Some(ref filter) = sub.machine_filter {
-                    if filter != machine_name {
-                        continue;
-                    }
-                }
-                let _ = sub.sender.send(change.clone());
-            }
-        }
+        // Delivery is handled exclusively by the dispatcher reading the log, so
+        // the commit path just records durably and wakes it. This keeps a single
+        // ordered delivery path and makes the stream replayable/at-least-once.
+        self.commit_notify.notify_one();
 
         Ok(TransitionResult {
             entity_id: entity_id.to_string(),
@@ -257,6 +260,10 @@ impl Engine {
             .map_err(EngineError::Storage)
     }
 
+    /// Register a subscriber. Both the initial backfill (everything after
+    /// `after_sequence`) and the live tail are delivered uniformly by the
+    /// dispatcher reading the log, so there is no separate backfill path and no
+    /// ordering race between catch-up and live records.
     pub fn subscribe(
         &self,
         id: String,
@@ -264,43 +271,95 @@ impl Engine {
         after_sequence: Sequence,
     ) -> Result<mpsc::UnboundedReceiver<ChangeRecord>> {
         let (tx, rx) = mpsc::unbounded_channel();
-
-        if let Ok(records) = self.storage.get_transitions_after(after_sequence, 10_000) {
-            for rec in records {
-                if let Some(ref filter) = machine_filter {
-                    if &rec.machine != filter {
-                        continue;
-                    }
-                }
-                let change = ChangeRecord {
-                    sequence: rec.sequence,
-                    transition_id: rec.id.clone(),
-                    entity_id: rec.entity_id.clone(),
-                    machine: rec.machine.clone(),
-                    from_state: rec.from_state.clone(),
-                    to_state: rec.to_state.clone(),
-                    event: rec.event.clone(),
-                    actor: rec.actor.clone(),
-                    version: 0,
-                    timestamp: rec.timestamp,
-                    ctx: rec.ctx.clone(),
-                    effects: vec![],
-                };
-                let _ = tx.send(change);
-            }
-        }
-
         self.subscribers.write().push(Subscriber {
             id,
             machine_filter,
             sender: tx,
+            delivered_through: AtomicU64::new(after_sequence),
         });
-
+        // Wake the dispatcher so the new subscriber is backfilled promptly.
+        self.commit_notify.notify_one();
         Ok(rx)
     }
 
     pub fn unsubscribe(&self, id: &str) {
         self.subscribers.write().retain(|s| s.id != id);
+    }
+
+    /// Deliver any not-yet-sent change records to every subscriber, advancing
+    /// each subscriber's cursor. Called by the dispatcher (off the async
+    /// reactor, since it does blocking storage reads). Returns the number of
+    /// records delivered. Dead subscribers (receiver dropped) are pruned.
+    pub fn dispatch_pass(&self) -> usize {
+        const BATCH: u32 = 256;
+        let mut delivered = 0usize;
+        let mut dead: Vec<String> = Vec::new();
+
+        {
+            let subs = self.subscribers.read();
+            for sub in subs.iter() {
+                let mut cursor = sub.delivered_through.load(Ordering::Acquire);
+                'drain: loop {
+                    let records = match self.storage.get_transitions_after(cursor, BATCH) {
+                        Ok(r) => r,
+                        Err(_) => break,
+                    };
+                    if records.is_empty() {
+                        break;
+                    }
+                    let batch_len = records.len();
+                    for rec in &records {
+                        // Advance past every record we inspect, even filtered-out
+                        // ones, so they are not re-scanned next pass.
+                        cursor = rec.sequence;
+                        if let Some(ref filter) = sub.machine_filter {
+                            if &rec.machine != filter {
+                                continue;
+                            }
+                        }
+                        let effects = self
+                            .storage
+                            .get_effects_for_transition(&rec.id)
+                            .unwrap_or_default();
+                        let change = ChangeRecord {
+                            sequence: rec.sequence,
+                            transition_id: rec.id.clone(),
+                            entity_id: rec.entity_id.clone(),
+                            machine: rec.machine.clone(),
+                            from_state: rec.from_state.clone(),
+                            to_state: rec.to_state.clone(),
+                            event: rec.event.clone(),
+                            actor: rec.actor.clone(),
+                            version: rec.version,
+                            timestamp: rec.timestamp,
+                            ctx: rec.ctx.clone(),
+                            effects: effects
+                                .iter()
+                                .map(|e| EffectPayload {
+                                    effect_name: e.effect_name.clone(),
+                                    payload: e.payload.clone(),
+                                })
+                                .collect(),
+                        };
+                        if sub.sender.send(change).is_err() {
+                            dead.push(sub.id.clone());
+                            sub.delivered_through.store(cursor, Ordering::Release);
+                            break 'drain;
+                        }
+                        delivered += 1;
+                    }
+                    sub.delivered_through.store(cursor, Ordering::Release);
+                    if batch_len < BATCH as usize {
+                        break;
+                    }
+                }
+            }
+        }
+
+        if !dead.is_empty() {
+            self.subscribers.write().retain(|s| !dead.contains(&s.id));
+        }
+        delivered
     }
 }
 
@@ -418,6 +477,126 @@ mod tests {
         assert_eq!(history.len(), 2);
         assert_eq!(history[0].from_state, "pending");
         assert_eq!(history[1].from_state, "paid");
+    }
+
+    #[test]
+    fn created_at_is_preserved_across_transitions() {
+        let engine = test_engine();
+        engine.define_machine(order_machine()).unwrap();
+
+        engine
+            .transition("order_1", "fulfillment", "pay", "u", serde_json::json!({}), None, None)
+            .unwrap();
+        let after_first = engine.current("order_1", "fulfillment").unwrap();
+
+        engine
+            .transition("order_1", "fulfillment", "pack", "u", serde_json::json!({}), None, None)
+            .unwrap();
+        let after_second = engine.current("order_1", "fulfillment").unwrap();
+
+        // created_at must carry forward unchanged; updated_at advances.
+        assert_eq!(after_first.created_at, after_second.created_at);
+        assert!(after_second.updated_at >= after_first.updated_at);
+        assert_eq!(after_second.version, 2);
+    }
+
+    #[test]
+    fn idempotent_replay_returns_real_version() {
+        let engine = test_engine();
+        engine.define_machine(order_machine()).unwrap();
+
+        let first = engine
+            .transition(
+                "order_1", "fulfillment", "pay", "u", serde_json::json!({}), None,
+                Some("idem-1".to_string()),
+            )
+            .unwrap();
+        let replay = engine
+            .transition(
+                "order_1", "fulfillment", "pay", "u", serde_json::json!({}), None,
+                Some("idem-1".to_string()),
+            )
+            .unwrap();
+
+        assert_eq!(replay.sequence, first.sequence);
+        assert_eq!(replay.transition_id, first.transition_id);
+        assert_eq!(replay.version, 1);
+    }
+
+    #[test]
+    fn dispatch_delivers_ordered_change_records_with_effects() {
+        let engine = test_engine();
+        engine.define_machine(order_machine()).unwrap();
+        engine.register_guard("payment_captured", Arc::new(|_, _| true));
+
+        let mut rx = engine
+            .subscribe("sub1".to_string(), Some("fulfillment".to_string()), 0)
+            .unwrap();
+
+        engine
+            .transition("o1", "fulfillment", "pay", "u", serde_json::json!({}), None, None)
+            .unwrap();
+        engine
+            .transition("o1", "fulfillment", "pack", "u", serde_json::json!({}), None, None)
+            .unwrap();
+        engine
+            .transition("o1", "fulfillment", "ship", "u", serde_json::json!({}), None, None)
+            .unwrap();
+
+        assert_eq!(engine.dispatch_pass(), 3);
+        // A second pass with no new commits delivers nothing (cursor persists).
+        assert_eq!(engine.dispatch_pass(), 0);
+
+        let mut recs = Vec::new();
+        while let Ok(r) = rx.try_recv() {
+            recs.push(r);
+        }
+        assert_eq!(recs.len(), 3);
+        assert_eq!(
+            recs.iter().map(|r| r.sequence).collect::<Vec<_>>(),
+            vec![1, 2, 3]
+        );
+        // The "ship" record carries its reconstructed effect and post-version.
+        assert_eq!(recs[2].event, "ship");
+        assert_eq!(recs[2].version, 3);
+        assert_eq!(recs[2].effects.len(), 1);
+        assert_eq!(recs[2].effects[0].effect_name, "notify_customer");
+    }
+
+    #[test]
+    fn dispatch_respects_machine_filter() {
+        let engine = test_engine();
+        engine.define_machine(order_machine()).unwrap();
+        let payment = MachineBuilder::new()
+            .name("payment")
+            .version(1)
+            .states(["unpaid", "captured"])
+            .initial_state("unpaid")
+            .transition("capture", ["unpaid"], "captured")
+            .build()
+            .unwrap();
+        engine.define_machine(payment).unwrap();
+
+        let mut rx = engine
+            .subscribe("sub1".to_string(), Some("payment".to_string()), 0)
+            .unwrap();
+
+        engine
+            .transition("o1", "fulfillment", "pay", "u", serde_json::json!({}), None, None)
+            .unwrap();
+        engine
+            .transition("o1", "payment", "capture", "u", serde_json::json!({}), None, None)
+            .unwrap();
+
+        engine.dispatch_pass();
+        let mut recs = Vec::new();
+        while let Ok(r) = rx.try_recv() {
+            recs.push(r);
+        }
+        // Only the payment-machine record is delivered; the fulfillment one is
+        // skipped but its sequence is still consumed (no infinite re-scan).
+        assert_eq!(recs.len(), 1);
+        assert_eq!(recs[0].machine, "payment");
     }
 
     #[test]

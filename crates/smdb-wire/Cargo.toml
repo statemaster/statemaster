@@ -28,3 +28,4 @@ futures.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true
+smdb-storage = { path = "../smdb-storage" }

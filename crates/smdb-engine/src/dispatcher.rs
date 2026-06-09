@@ -4,22 +4,23 @@ use std::time::Duration;
 use tokio::sync::watch;
 use tracing::{debug, error, info};
 
-use smdb_storage::StorageEngine;
+use crate::engine::Engine;
 
+/// Background worker that turns the committed transition log into change-stream
+/// deliveries. It owns the single delivery path: on each wake-up (a commit
+/// notification, the poll interval, or shutdown) it fans newly-committed records
+/// out to every subscriber and drains the effect outbox. All storage access runs
+/// on a blocking worker so the async reactor is never stalled.
 pub struct Dispatcher {
-    storage: Arc<dyn StorageEngine>,
+    engine: Arc<Engine>,
     interval: Duration,
     shutdown: watch::Receiver<bool>,
 }
 
 impl Dispatcher {
-    pub fn new(
-        storage: Arc<dyn StorageEngine>,
-        interval: Duration,
-        shutdown: watch::Receiver<bool>,
-    ) -> Self {
+    pub fn new(engine: Arc<Engine>, interval: Duration, shutdown: watch::Receiver<bool>) -> Self {
         Self {
-            storage,
+            engine,
             interval,
             shutdown,
         }
@@ -27,52 +28,51 @@ impl Dispatcher {
 
     pub async fn run(&mut self) {
         info!("dispatcher started, polling every {:?}", self.interval);
+        let notify = self.engine.commit_notify();
 
         loop {
             tokio::select! {
                 _ = self.shutdown.changed() => {
                     if *self.shutdown.borrow() {
-                        info!("dispatcher shutting down, draining remaining effects");
-                        self.drain().await;
+                        info!("dispatcher shutting down, draining remaining records");
+                        self.dispatch().await;
                         return;
                     }
                 }
+                _ = notify.notified() => {
+                    self.dispatch().await;
+                }
                 _ = tokio::time::sleep(self.interval) => {
-                    self.tick().await;
+                    self.dispatch().await;
                 }
             }
         }
     }
 
-    async fn tick(&self) {
-        match self.storage.get_pending_effects(100) {
-            Ok(effects) => {
+    /// Fan out new change records, then mark the corresponding effects published.
+    async fn dispatch(&self) {
+        let engine = Arc::clone(&self.engine);
+        match tokio::task::spawn_blocking(move || {
+            let delivered = engine.dispatch_pass();
+
+            // Drain the effect outbox: once a transition's change record is on
+            // the stream, its effects are considered published.
+            let storage = engine.storage();
+            if let Ok(effects) = storage.get_pending_effects(256) {
                 for effect in effects {
-                    debug!(effect_id = %effect.id, effect_name = %effect.effect_name, "publishing effect");
-                    if let Err(e) = self.storage.mark_effect_published(&effect.id) {
+                    if let Err(e) = storage.mark_effect_published(&effect.id) {
                         error!(effect_id = %effect.id, error = %e, "failed to mark effect published");
-                        let _ = self.storage.mark_effect_failed(&effect.id);
+                        let _ = storage.mark_effect_failed(&effect.id);
                     }
                 }
             }
-            Err(e) => {
-                error!(error = %e, "failed to fetch pending effects");
-            }
+            delivered
+        })
+        .await
+        {
+            Ok(n) if n > 0 => debug!(delivered = n, "dispatched change records"),
+            Ok(_) => {}
+            Err(e) => error!(error = %e, "dispatch task panicked"),
         }
-    }
-
-    async fn drain(&self) {
-        loop {
-            match self.storage.get_pending_effects(100) {
-                Ok(effects) if effects.is_empty() => break,
-                Ok(effects) => {
-                    for effect in effects {
-                        let _ = self.storage.mark_effect_published(&effect.id);
-                    }
-                }
-                Err(_) => break,
-            }
-        }
-        info!("dispatcher drained");
     }
 }

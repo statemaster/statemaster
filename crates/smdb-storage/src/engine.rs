@@ -83,6 +83,10 @@ pub trait StorageEngine: Send + Sync {
     /// Return up to `limit` pending effects ordered by `created_at` ascending.
     fn get_pending_effects(&self, limit: u32) -> Result<Vec<Effect>>;
 
+    /// Return all effects emitted by a single transition, in insertion order.
+    /// Used to reconstruct a `ChangeRecord` from the log during stream delivery.
+    fn get_effects_for_transition(&self, transition_id: &str) -> Result<Vec<Effect>>;
+
     /// Mark an outbox entry as successfully published.
     fn mark_effect_published(&self, effect_id: &str) -> Result<()>;
 

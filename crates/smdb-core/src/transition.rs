@@ -3,7 +3,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::types::{
     ActorId, Context, EntityId, EventName, IdempotencyKey, MachineName, Sequence, StateName,
-    TransitionId,
+    TransitionId, Version,
 };
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -19,5 +19,7 @@ pub struct TransitionRecord {
     pub actor: ActorId,
     pub ctx: Context,
     pub idempotency_key: Option<IdempotencyKey>,
+    /// The entity's version *after* this transition (matches the projection).
+    pub version: Version,
     pub timestamp: DateTime<Utc>,
 }
