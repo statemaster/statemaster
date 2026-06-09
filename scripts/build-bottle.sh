@@ -6,22 +6,32 @@
 # paths the bottle is relocation-free (`cellar :any_skip_relocation`).
 #
 # Env in:  VERSION (e.g. 0.1.0), BOTTLE_TAG (e.g. arm64_sonoma, ventura,
-#          x86_64_linux). Writes the tarball + a `sha-<tag>.txt` checksum file
-#          and, if running under Actions, sets `tarball`/`sha256` step outputs.
+#          x86_64_linux). Optional TARGET (a Rust target triple) cross-compiles
+#          — e.g. x86_64-apple-darwin on an Apple-Silicon runner so we never
+#          depend on a scarce Intel macOS runner. Writes the tarball + a
+#          `sha-<tag>.txt` checksum file and, under Actions, sets step outputs.
 set -euo pipefail
 
 VERSION="${VERSION:?VERSION not set}"
 BOTTLE_TAG="${BOTTLE_TAG:?BOTTLE_TAG not set}"
+TARGET="${TARGET:-}"
 NAME="statemaster"
 BINS=(smdbd smdbctl smash)
 
-cargo build --release "${BINS[@]/#/--bin=}"
+if [ -n "${TARGET}" ]; then
+  rustup target add "${TARGET}"
+  cargo build --release --target "${TARGET}" "${BINS[@]/#/--bin=}"
+  bindir="target/${TARGET}/release"
+else
+  cargo build --release "${BINS[@]/#/--bin=}"
+  bindir="target/release"
+fi
 
 keg="${NAME}/${VERSION}"
 rm -rf "${NAME}"
 mkdir -p "${keg}/bin" "${keg}/.brew"
 for b in "${BINS[@]}"; do
-  install -m 0755 "target/release/${b}" "${keg}/bin/${b}"
+  install -m 0755 "${bindir}/${b}" "${keg}/bin/${b}"
 done
 # Homebrew bottles carry a copy of the formula under .brew.
 cp Formula/statemaster.rb "${keg}/.brew/statemaster.rb"

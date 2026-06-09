@@ -23,12 +23,18 @@ jobs:
       fail-fast: false
       matrix:
         include:
+          # Both macOS bottles build on the Apple-Silicon runner; the Intel one
+          # cross-compiles. This avoids the scarce/retiring macos-13 runners.
           - os: macos-14
             bottle_tag: arm64_sonoma
-          - os: macos-13
+            target: aarch64-apple-darwin
+          - os: macos-14
             bottle_tag: ventura
+            target: x86_64-apple-darwin
+            macos_deployment_target: "13.0"
           - os: ubuntu-22.04
             bottle_tag: x86_64_linux
+            target: ""
     steps:
       - uses: actions/checkout@v4
         with:
@@ -49,6 +55,8 @@ jobs:
         env:
           VERSION: ${{ steps.ver.outputs.version }}
           BOTTLE_TAG: ${{ matrix.bottle_tag }}
+          TARGET: ${{ matrix.target }}
+          MACOSX_DEPLOYMENT_TARGET: ${{ matrix.macos_deployment_target }}
         run: bash scripts/build-bottle.sh
 
       - name: Attach bottle to the release
