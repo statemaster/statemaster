@@ -1,6 +1,6 @@
 [Unit]
 Description=StateMaster — state-machine database daemon
-Documentation=https://github.com/pollystack/statemaster/blob/main/PROTOCOL.md
+Documentation=https://github.com/statemaster/statemaster/blob/main/PROTOCOL.md
 After=network.target
 Wants=network.target
 

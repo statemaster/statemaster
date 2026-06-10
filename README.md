@@ -212,7 +212,7 @@ Read an entity's full transition log — every move it has ever made on a machin
 **Prerequisites:** Rust 1.88+, a C linker.
 
 ```bash
-git clone https://github.com/pollystack/statemaster
+git clone https://github.com/statemaster/statemaster
 cd statemaster
 cargo build --release --workspace
 ```
