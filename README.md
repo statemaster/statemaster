@@ -9,6 +9,13 @@
   own the lifecycle of every entity — validate transitions, enforce guards, and remember everywhere each entity has been.
 </p>
 
+<p align="center">
+  <a href="https://github.com/statemaster/statemaster/actions/workflows/ci.yml"><img src="https://github.com/statemaster/statemaster/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
+  <a href="https://hub.docker.com/r/statemaster/statemaster"><img src="https://img.shields.io/docker/v/statemaster/statemaster?logo=docker&label=docker" alt="Docker Hub"></a>
+  <a href="https://github.com/statemaster/statemaster/releases"><img src="https://img.shields.io/github/v/release/statemaster/statemaster?label=release" alt="Release"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-AGPL--3.0-blue" alt="License"></a>
+</p>
+
 ---
 
 Your `status` column is lying to you. The transition logic is scattered across a dozen `if` statements, the audit trail is a pile of triggers nobody trusts, and every service that cares about a state change is polling or guessing. StateMaster is the database that was always missing: a purpose-built, queryable, durable store for entity lifecycles, with a validated change stream that makes the rest of your architecture reactive.
@@ -32,10 +39,34 @@ State is a first-class thing. It deserves its own database.
 
 ## Quickstart
 
-### Start the server
+All you need is Docker.
+
+### Try it in 30 seconds
+
+`smash` is StateMaster's psql-style shell. It opens the database directly — no server required — so a single throwaway container is a complete playground:
 
 ```bash
-docker compose -f deploy/docker-compose.yml up
+docker run --rm -it --entrypoint smash \
+  statemaster/statemaster:latest -d /var/lib/statemaster/data
+```
+
+Then define a machine and fire transitions (see below).
+
+### Run the server
+
+For real deployments, run the daemon from [Docker Hub](https://hub.docker.com/r/statemaster/statemaster):
+
+```bash
+docker run -d --name statemaster \
+  -p 7632:7632 -p 7633:7633 \
+  -v statemaster-data:/var/lib/statemaster/data \
+  statemaster/statemaster:latest
+```
+
+Or with Docker Compose (builds from source and mounts [`deploy/statemaster.toml`](deploy/statemaster.toml)):
+
+```bash
+docker compose -f deploy/docker-compose.yml up -d
 ```
 
 The server is ready when `/readyz` returns 200:
@@ -44,13 +75,7 @@ The server is ready when `/readyz` returns 200:
 curl -sf http://localhost:7633/readyz && echo "ready"
 ```
 
-### Connect with smash
-
-```bash
-docker run --rm -it --network host \
-  ghcr.io/pollystack/statemaster:latest \
-  smash --addr localhost:7632 --token changeme
-```
+Apps talk to the server over the wire protocol on port 7632 via the [Rust SDK](crates/smdb-sdk). (`smash` and `smdbctl` open the data directory directly, so point them at a live server's volume only while the daemon is stopped.)
 
 ### Define a machine
 
@@ -184,7 +209,7 @@ Read an entity's full transition log — every move it has ever made on a machin
 
 ## Building from source
 
-**Prerequisites:** Rust 1.87+, a C linker.
+**Prerequisites:** Rust 1.88+, a C linker.
 
 ```bash
 git clone https://github.com/pollystack/statemaster
@@ -216,20 +241,20 @@ docker build -f deploy/Dockerfile -t statemaster:dev .
 
 ## Configuration
 
-StateMaster is configured via a TOML file, environment variables, and command-line flags, in that order of precedence (flags win).
+StateMaster is configured via a TOML file (`--config`, default `statemaster.toml`), environment variables, and command-line flags, in that order of precedence (flags win). The Docker image ships a default config at `/etc/statemaster/statemaster.toml`; mount your own over it to customize.
 
 An annotated example is at [`deploy/statemaster.toml`](deploy/statemaster.toml). Key sections:
 
 | Section       | Purpose                                                          |
 |---------------|------------------------------------------------------------------|
 | `[server]`    | `listen_addr` (wire, default `:7632`) and `metrics_addr` (`:7633`) |
-| `[storage]`   | `data_dir` and `fsync_mode` (`synchronous` or `relaxed`)        |
-| `[tls]`       | Paths to the PEM certificate chain and private key              |
+| `[storage]`   | `data_dir` — where the database file lives                      |
+| `[tls]`       | PEM certificate chain and private key; omit for a self-signed cert |
 | `[logging]`   | `level` (`info` default) and `format` (`json` or `text`)        |
-| `[dispatcher]`| `interval_ms` — how often the outbox is drained (default `100`) |
-| `[auth]`      | `tokens` list — bearer tokens accepted in the `Auth` handshake  |
+| `[dispatcher]`| `interval_ms` — change-stream polling interval (default `100`)  |
+| `[auth]`      | `tokens` list — bearer tokens accepted in the `Auth` handshake; empty = open dev mode |
 
-**Environment variable override pattern:** `SMDB_<SECTION>_<KEY>` in uppercase, e.g. `SMDB_SERVER_LISTEN_ADDR=0.0.0.0:7632`.
+**Environment variables:** `SMDB_LOG_LEVEL` overrides the log level; `SMDB_AUTH_TOKENS` (comma-separated) overrides `[auth] tokens`.
 
 ### systemd
 

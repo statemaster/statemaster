@@ -43,7 +43,10 @@ RUN mkdir -p /var/lib/statemaster/data && \
 # Wire protocol | Metrics / health | Reserved for replication
 EXPOSE 7632 7633 7634
 
+# Lets smash/smdbctl find the database without flags
+ENV SMDB_DATA_DIR=/var/lib/statemaster/data
+
 USER statemaster
 
-ENTRYPOINT ["/usr/local/bin/smdbd"]
-CMD ["--config", "/etc/statemaster/statemaster.toml"]
+# CMD (not ENTRYPOINT) so `docker run <image> smash` drops into the shell
+CMD ["smdbd", "--config", "/etc/statemaster/statemaster.toml"]
