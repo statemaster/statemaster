@@ -3,9 +3,18 @@
 *.swp
 *.swo
 .DS_Store
-.env
 *.pem
 data/
+
+# Credentials / local secrets — never commit these
+.env
+.env.*
+.release.env
+*credentials*
+
+# IDE / local tooling
+.idea/
+.claude/
 
 # Homebrew bottle build artifacts (scripts/build-bottle.sh)
 /statemaster/
