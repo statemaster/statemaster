@@ -252,7 +252,7 @@ async fn main() -> Result<()> {
     // Build the wire server: one connection layer providing the handshake,
     // optional TLS, auth, all four verbs, and change-stream subscriptions.
     let server_config = ServerConfig {
-         listen_addr: cfg.listen_addr.clone(),
+        listen_addr: cfg.listen_addr.clone(),
         tls_cert_path: cfg.tls_cert_path.clone(),
         tls_key_path: cfg.tls_key_path.clone(),
         auth_tokens: cfg.auth_tokens.clone(),
