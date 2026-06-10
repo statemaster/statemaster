@@ -28,6 +28,7 @@ jobs:
           - os: macos-14
             bottle_tag: arm64_sonoma
             target: aarch64-apple-darwin
+            macos_deployment_target: "14.0"
           - os: macos-14
             bottle_tag: ventura
             target: x86_64-apple-darwin
