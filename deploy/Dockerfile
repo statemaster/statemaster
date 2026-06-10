@@ -1,5 +1,6 @@
 # Stage 1: Builder
-FROM rust:1.87-slim AS builder
+# slim-bookworm so the builder's glibc matches the bookworm runtime stage
+FROM rust:1.94-slim-bookworm AS builder
 
 RUN apt-get update && apt-get install -y \
     pkg-config \
@@ -20,6 +21,7 @@ FROM debian:bookworm-slim AS runtime
 
 RUN apt-get update && apt-get install -y \
     ca-certificates \
+    curl \
     && rm -rf /var/lib/apt/lists/*
 
 # Create a non-root system user
@@ -31,7 +33,10 @@ COPY --from=builder /build/target/release/smdbd    /usr/local/bin/smdbd
 COPY --from=builder /build/target/release/smdbctl  /usr/local/bin/smdbctl
 COPY --from=builder /build/target/release/smash    /usr/local/bin/smash
 
-# Data directory for WAL, heap, and index files
+# Default config; override by mounting your own at /etc/statemaster/
+COPY deploy/statemaster.toml /etc/statemaster/statemaster.toml
+
+# Data directory for the database file
 RUN mkdir -p /var/lib/statemaster/data && \
     chown -R statemaster:statemaster /var/lib/statemaster
 

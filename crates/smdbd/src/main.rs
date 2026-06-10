@@ -1,3 +1,5 @@
+mod config;
+
 use std::convert::Infallible;
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -21,25 +23,25 @@ use tracing::{error, info, warn};
 #[derive(Parser, Debug)]
 #[command(name = "smdbd", about = "StateMaster database daemon")]
 struct Args {
-    /// Path to TOML config file
-    #[arg(short, long, default_value = "statemaster.toml")]
-    config: String,
+    /// Path to TOML config file [default: statemaster.toml, ignored if absent]
+    #[arg(short, long)]
+    config: Option<String>,
 
-    /// TCP address to listen on for the wire protocol
-    #[arg(long, default_value = "0.0.0.0:7632")]
-    listen: String,
+    /// TCP address to listen on for the wire protocol [default: 0.0.0.0:7632]
+    #[arg(long)]
+    listen: Option<String>,
 
-    /// TCP address for the metrics/health HTTP server
-    #[arg(long, default_value = "0.0.0.0:7633")]
-    metrics_addr: String,
+    /// TCP address for the metrics/health HTTP server [default: 0.0.0.0:7633]
+    #[arg(long)]
+    metrics_addr: Option<String>,
 
-    /// Directory where the database file is stored
-    #[arg(long, default_value = "data")]
-    data_dir: String,
+    /// Directory where the database file is stored [default: data]
+    #[arg(long)]
+    data_dir: Option<String>,
 
-    /// Log level (trace, debug, info, warn, error)
-    #[arg(long, default_value = "info")]
-    log_level: String,
+    /// Log level (trace, debug, info, warn, error) [default: info]
+    #[arg(long)]
+    log_level: Option<String>,
 
     /// Path to TLS certificate (PEM). If absent, self-signed cert is generated.
     #[arg(long)]
@@ -48,6 +50,46 @@ struct Args {
     /// Path to TLS private key (PEM). If absent, self-signed cert is generated.
     #[arg(long)]
     tls_key: Option<String>,
+}
+
+/// Resolve the final config: defaults < config file < env < CLI flags.
+fn resolve_config(args: &Args) -> Result<(config::Config, config::ConfigSource)> {
+    let explicit = args.config.is_some();
+    let path = args.config.as_deref().unwrap_or("statemaster.toml");
+    let (file, source) = config::load(path, explicit)?;
+
+    // SMDB_AUTH_TOKENS (comma-separated) takes precedence over [auth] tokens.
+    let auth_tokens = match std::env::var("SMDB_AUTH_TOKENS") {
+        Ok(s) => s
+            .split(',')
+            .map(|t| t.trim().to_string())
+            .filter(|t| !t.is_empty())
+            .collect(),
+        Err(_) => file.auth.tokens,
+    };
+
+    let log_level = args
+        .log_level
+        .clone()
+        .or_else(|| std::env::var("SMDB_LOG_LEVEL").ok())
+        .unwrap_or(file.logging.level);
+
+    let cfg = config::Config {
+        listen_addr: args.listen.clone().unwrap_or(file.server.listen_addr),
+        metrics_addr: args
+            .metrics_addr
+            .clone()
+            .unwrap_or(file.server.metrics_addr),
+        data_dir: args.data_dir.clone().unwrap_or(file.storage.data_dir),
+        log_level,
+        log_format: file.logging.format,
+        dispatcher_interval_ms: file.dispatcher.interval_ms,
+        tls_cert_path: args.tls_cert.clone().or(file.tls.cert_path),
+        tls_key_path: args.tls_key.clone().or(file.tls.key_path),
+        auth_tokens,
+    };
+    cfg.validate()?;
+    Ok((cfg, source))
 }
 
 // ---------------------------------------------------------------------------
@@ -165,23 +207,29 @@ async fn run_metrics_server(
 #[tokio::main]
 async fn main() -> Result<()> {
     let args = Args::parse();
+    let (cfg, source) = resolve_config(&args)?;
 
-    // Init tracing with JSON format
-    tracing_subscriber::fmt()
-        .json()
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new(&args.log_level)),
-        )
-        .init();
+    let env_filter = tracing_subscriber::EnvFilter::try_from_default_env()
+        .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new(&cfg.log_level));
+    match cfg.log_format {
+        config::LogFormat::Json => tracing_subscriber::fmt()
+            .json()
+            .with_env_filter(env_filter)
+            .init(),
+        config::LogFormat::Text => tracing_subscriber::fmt().with_env_filter(env_filter).init(),
+    }
 
     info!(version = SERVER_VERSION, "smdbd starting");
+    match source {
+        config::ConfigSource::File(path) => info!(path = %path, "loaded config file"),
+        config::ConfigSource::Defaults => info!("no config file found; using defaults"),
+    }
 
     // Ensure data dir exists
-    std::fs::create_dir_all(&args.data_dir)
-        .with_context(|| format!("creating data dir '{}'", args.data_dir))?;
+    std::fs::create_dir_all(&cfg.data_dir)
+        .with_context(|| format!("creating data dir '{}'", cfg.data_dir))?;
 
-    let db_path = std::path::Path::new(&args.data_dir).join("statemaster.redb");
+    let db_path = std::path::Path::new(&cfg.data_dir).join("statemaster.redb");
     info!(path = %db_path.display(), "opening storage");
 
     let storage: Arc<dyn StorageEngine> = Arc::new(
@@ -195,30 +243,19 @@ async fn main() -> Result<()> {
     // the wire server's accept loop.
     let (shutdown_tx, shutdown_rx) = watch::channel(false);
 
-    // Auth tokens: opt-in. Comma-separated SMDB_AUTH_TOKENS enables token auth;
-    // when empty the server runs open (dev default), matching prior behaviour.
-    let auth_tokens: Vec<String> = std::env::var("SMDB_AUTH_TOKENS")
-        .ok()
-        .map(|s| {
-            s.split(',')
-                .map(|t| t.trim().to_string())
-                .filter(|t| !t.is_empty())
-                .collect()
-        })
-        .unwrap_or_default();
-    if auth_tokens.is_empty() {
-        info!("no SMDB_AUTH_TOKENS set; wire server accepts any token (dev mode)");
+    if cfg.auth_tokens.is_empty() {
+        info!("no auth tokens configured; wire server accepts any token (dev mode)");
     } else {
-        info!(count = auth_tokens.len(), "token auth enabled");
+        info!(count = cfg.auth_tokens.len(), "token auth enabled");
     }
 
     // Build the wire server: one connection layer providing the handshake,
     // optional TLS, auth, all four verbs, and change-stream subscriptions.
     let server_config = ServerConfig {
-        listen_addr: args.listen.clone(),
-        tls_cert_path: args.tls_cert.clone(),
-        tls_key_path: args.tls_key.clone(),
-        auth_tokens,
+         listen_addr: cfg.listen_addr.clone(),
+        tls_cert_path: cfg.tls_cert_path.clone(),
+        tls_key_path: cfg.tls_key_path.clone(),
+        auth_tokens: cfg.auth_tokens.clone(),
         max_connections: 1024,
         max_frame_size: smdb_proto::MAX_FRAME_SIZE,
     };
@@ -229,28 +266,29 @@ async fn main() -> Result<()> {
     {
         let eng = Arc::clone(&engine);
         let sd = shutdown_rx.clone();
+        let interval = Duration::from_millis(cfg.dispatcher_interval_ms);
         tokio::spawn(async move {
-            let mut dispatcher = Dispatcher::new(eng, Duration::from_millis(100), sd);
+            let mut dispatcher = Dispatcher::new(eng, interval, sd);
             dispatcher.run().await;
         });
     }
 
     // Metrics/health server.
     {
-        let metrics_addr: SocketAddr = args
+        let metrics_addr: SocketAddr = cfg
             .metrics_addr
             .parse()
-            .with_context(|| format!("parsing metrics addr '{}'", args.metrics_addr))?;
+            .with_context(|| format!("parsing metrics addr '{}'", cfg.metrics_addr))?;
         let m = Arc::clone(&metrics);
         let sd = shutdown_rx.clone();
         tokio::spawn(run_metrics_server(metrics_addr, m, sd));
     }
 
     // Bind the wire listener and run the server until shutdown.
-    let listen_addr: SocketAddr = args
-        .listen
+    let listen_addr: SocketAddr = cfg
+        .listen_addr
         .parse()
-        .with_context(|| format!("parsing listen addr '{}'", args.listen))?;
+        .with_context(|| format!("parsing listen addr '{}'", cfg.listen_addr))?;
     let listener = TcpListener::bind(listen_addr)
         .await
         .with_context(|| format!("binding to '{}'", listen_addr))?;

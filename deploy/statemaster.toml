@@ -4,43 +4,35 @@
 listen_addr = "0.0.0.0:7632"
 
 # HTTP endpoint for Prometheus metrics (/metrics) and health probes
-# (/healthz for liveness, /readyz for readiness after recovery).
+# (/healthz for liveness, /readyz for readiness).
 metrics_addr = "0.0.0.0:7633"
 
-# Reserved for future peer / replication traffic.
-# replication_addr = "0.0.0.0:7634"
-
 [storage]
-# Root directory for WAL segments, heap files, and B-tree index files.
+# Directory where the database file is stored.
 data_dir = "/var/lib/statemaster/data"
-
-# fsync_mode controls write-ahead log durability:
-#   "synchronous"  — fsync before ACK. Fully durable. Default.
-#   "relaxed"      — group commit with a small delay. Higher throughput,
-#                    small window of potential data loss on hard crash.
-fsync_mode = "synchronous"
-
-[tls]
-# PEM-encoded server certificate chain and private key.
-# Required; the daemon will not start if these paths are missing or unreadable.
-cert_path = "/etc/statemaster/cert.pem"
-key_path  = "/etc/statemaster/key.pem"
 
 [logging]
 # Log level: "trace" | "debug" | "info" | "warn" | "error"
+# Can be overridden with the SMDB_LOG_LEVEL env var or --log-level flag.
 level = "info"
 
 # Log format: "json" (structured, for log aggregators) | "text" (human-readable)
 format = "json"
 
 [dispatcher]
-# How often the dispatcher drains the outbox and pushes change records to
-# subscribers, in milliseconds. Lower values reduce change-stream lag at
+# How often the dispatcher drains the transition log and pushes change records
+# to subscribers, in milliseconds. Lower values reduce change-stream lag at
 # the cost of more frequent storage reads.
 interval_ms = 100
 
-[auth]
-# Bearer tokens accepted in the Auth handshake.
-# In production replace these with long, randomly-generated secrets and
-# rotate them via your secrets manager. Never commit real tokens.
-tokens = ["changeme"]
+# [tls]
+# PEM-encoded server certificate chain and private key. If omitted, the daemon
+# generates a self-signed certificate at startup (fine for dev, not for prod).
+# cert_path = "/etc/statemaster/cert.pem"
+# key_path  = "/etc/statemaster/key.pem"
+
+# [auth]
+# Bearer tokens accepted in the Auth handshake. When no tokens are configured
+# the server accepts any token (dev mode). The SMDB_AUTH_TOKENS env var
+# (comma-separated) takes precedence over this list. Never commit real tokens.
+# tokens = ["changeme"]
